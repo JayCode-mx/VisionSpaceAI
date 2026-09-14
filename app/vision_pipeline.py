@@ -14,7 +14,11 @@ import keras
 from keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input as mobilenet_preprocess
 
 from app.config import settings
-from image_preprocessor import ImagePreprocessor
+try:
+    from app.image_preprocessor import ImagePreprocessor
+except ImportError:
+    from image_preprocessor import ImagePreprocessor
+
 
 
 class VisionPipeline:
@@ -82,8 +86,8 @@ class VisionPipeline:
             else:
                 image_features = output
 
-            # L2 normalize
-            image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+            # L2 normalize using PyTorch
+            image_features = torch.nn.functional.normalize(image_features, p=2, dim=-1)
 
         embedding = image_features.detach().cpu().numpy().squeeze(0).astype(np.float32)
         return embedding
@@ -107,7 +111,8 @@ class VisionPipeline:
             else:
                 text_features = output
 
-            text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
+            # L2 normalize using PyTorch
+            text_features = torch.nn.functional.normalize(text_features, p=2, dim=-1)
 
         embedding = text_features.detach().cpu().numpy().squeeze(0).astype(np.float32)
         return embedding

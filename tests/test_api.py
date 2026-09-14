@@ -110,6 +110,30 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_multi_object_response_structure(self):
+        img_bytes = self._create_sample_image(size=(400, 300))
+        response = self.client.post(
+            "/api/v1/search-furniture",
+            files={"file": ("room_scene.png", img_bytes, "image/png")},
+            data={"top_k": 2},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertIn("total_objects_detected", data)
+        self.assertIn("detected_objects", data)
+        self.assertGreater(data["total_objects_detected"], 0)
+        self.assertGreater(len(data["detected_objects"]), 0)
+
+        first_obj = data["detected_objects"][0]
+        self.assertIn("object_id", first_obj)
+        self.assertIn("label", first_obj)
+        self.assertIn("confidence", first_obj)
+        self.assertIn("bbox", first_obj)
+        self.assertEqual(len(first_obj["bbox"]), 4)
+        self.assertIn("matches", first_obj)
+        self.assertGreater(len(first_obj["matches"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

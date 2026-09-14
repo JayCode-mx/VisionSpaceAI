@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VisionSpace AI — Multi-Object Visual Furniture Search (YOLOv8 & CLIP)</title>
+  <meta name="description" content="Google Lens-style multi-object visual search for designer furniture powered by Ultralytics YOLOv8, OpenCV CLAHE, PyTorch CLIP embeddings, and Qdrant Cloud.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+          },
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              400: '#818cf8',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+              900: '#312e81',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Alpine.js CDN -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.80);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased flex flex-col selection:bg-indigo-500 selection:text-white"
+      x-data="visualSearchApp()" x-init="initApp()">
+
+  <!-- Background Ambient Glow -->
+  <div class="fixed inset-0 overflow-hidden pointer-events-none z-0">
+    <div class="absolute -top-40 left-1/2 -translate-x-1/2 w-[700px] h-[350px] bg-indigo-600/15 rounded-full blur-[120px]"></div>
+    <div class="absolute top-1/3 -right-20 w-[400px] h-[400px] bg-violet-600/10 rounded-full blur-[100px]"></div>
+  </div>
+
+  <!-- HEADER -->
+  <header class="sticky top-0 z-40 border-b border-slate-800/80 glass-panel">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <!-- Logo & Brand -->
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-violet-600 to-cyan-400 p-0.5 shadow-lg shadow-indigo-500/20">
+          <div class="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+            <svg class="w-5 h-5 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+              <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+          </div>
+        </div>
+        <div>
+          <span class="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">VisionSpace AI</span>
+          <span class="hidden sm:inline-block ml-2 text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">YOLOv8 Lens Mode</span>
+        </div>
+      </div>
+
+      <!-- Engine Status & Controls -->
+      <div class="flex items-center space-x-3">
+        <!-- Status Indicator Pill -->
+        <div class="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-slate-900 border border-slate-800 text-xs font-medium">
+          <span class="relative flex h-2 w-2">
+            <span x-show="engineStatus === 'online'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span :class="{
+              'bg-emerald-500': engineStatus === 'online',
+              'bg-amber-500 animate-pulse': engineStatus === 'connecting',
+              'bg-rose-500': engineStatus === 'offline'
+            }" class="relative inline-flex rounded-full h-2 w-2"></span>
+          </span>
+          <span x-text="engineStatusText" class="text-slate-300">Online</span>
+          <span x-show="pingLatencyMs !== null" class="text-slate-500 text-[10px]" x-text="'(' + pingLatencyMs + 'ms)'"></span>
+        </div>
+
+        <!-- API Base URL Settings Toggle -->
+        <button @click="showSettingsModal = true" title="Configure Backend API URL"
+                class="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+          </svg>
+        </button>
+
+        <!-- GitHub Repo Link -->
+        <a href="https://github.com/JayCode-mx/VisionSpaceAI" target="_blank" rel="noopener noreferrer"
+           class="p-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white transition">
+          <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN CONTENT -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-10 relative z-10">
+
+    <!-- HERO SECTION -->
+    <section class="text-center max-w-3xl mx-auto pt-4 space-y-4">
+      <div class="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-semibold tracking-wide uppercase">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="12"></line>
+          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>
+        <span>Ultralytics YOLOv8 &bull; Multi-Object Extraction &bull; PyTorch CLIP 512-D</span>
+      </div>
+      <h1 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
+        Multi-Object Visual Furniture Search
+      </h1>
+      <p class="text-slate-400 text-base sm:text-lg leading-relaxed">
+        Upload any living room or interior photo. VisionSpace AI automatically detects every individual furniture piece using YOLOv8, crops each bounding box, and finds real matching catalog items with direct buy links.
+      </p>
+    </section>
+
+    <!-- SEARCH WORKSPACE (Dropzone + Filters + Trigger) -->
+    <section class="max-w-4xl mx-auto space-y-6">
+      <div class="p-6 sm:p-8 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-2xl shadow-black/60 relative">
+
+        <!-- Dropzone Area -->
+        <div class="relative group">
+          <div
+            @dragover.prevent="isDragging = true"
+            @dragleave.prevent="isDragging = false"
+            @drop.prevent="handleFileDrop($event)"
+            @click="$refs.fileInput.click()"
+            :class="{
+              'border-indigo-500 bg-indigo-950/20 scale-[1.01]': isDragging,
+              'border-slate-700/80 bg-slate-950/60 hover:border-slate-600 hover:bg-slate-950/80': !isDragging && !previewUrl,
+              'border-indigo-500/40 bg-slate-950/40': previewUrl
+            }"
+            class="relative rounded-xl border-2 border-dashed p-8 text-center cursor-pointer transition-all duration-200 flex flex-col items-center justify-center min-h-[220px]">
+
+            <input type="file" x-ref="fileInput" @change="handleFileSelect($event)" accept="image/jpeg,image/png,image/webp" class="hidden">
+
+            <!-- Empty State Prompt -->
+            <div x-show="!previewUrl" class="space-y-3 pointer-events-none">
+              <div class="w-14 h-14 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center mx-auto text-indigo-400 shadow-inner group-hover:scale-110 transition duration-200">
+                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                </svg>
+              </div>
+              <div class="text-sm font-medium text-slate-200">
+                <span class="text-indigo-400 font-semibold underline underline-offset-2">Click to upload room photo</span> or drag and drop here
+              </div>
+              <p class="text-xs text-slate-500">Supports room photos with multiple furniture items (JPEG, PNG, WEBP)</p>
+            </div>
+
+            <!-- Image Loaded Preview with Lens Overlay -->
+            <div x-show="previewUrl" x-cloak class="flex flex-col sm:flex-row items-center gap-6 w-full max-w-md pointer-events-auto">
+              <div class="relative w-40 h-40 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 shadow-md shrink-0 group/img">
+                <img :src="previewUrl" alt="Query Preview" class="w-full h-full object-cover">
+                <div class="absolute inset-0 bg-slate-950/60 opacity-0 group-hover/img:opacity-100 flex items-center justify-center transition">
+                  <span class="text-[11px] font-semibold text-white">Replace Image</span>
+                </div>
+              </div>
+              <div class="text-left space-y-2 flex-1 w-full">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-semibold uppercase tracking-wider text-indigo-400">Query Room Image</span>
+                  <button @click.stop="clearImage()" type="button" class="text-xs text-rose-400 hover:text-rose-300 font-medium transition">Remove</button>
+                </div>
+                <p class="text-sm font-semibold text-slate-100 truncate" x-text="fileName || 'room-image.jpg'"></p>
+                <div class="flex items-center gap-2 text-xs text-slate-400">
+                  <span x-text="fileSizeFormatted"></span>
+                  <span>&bull;</span>
+                  <span class="text-emerald-400" x-text="detectedObjects.length > 0 ? (detectedObjects.length + ' Objects Detected') : 'Ready for Detection'"></span>
+                </div>
+
+                <!-- Detected Tags Preview Pills -->
+                <div x-show="detectedObjects.length > 0" class="flex flex-wrap gap-1.5 pt-1">
+                  <template x-for="obj in detectedObjects" :key="obj.object_id">
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 capitalize"
+                          x-text="'#' + obj.object_id + ' ' + obj.label"></span>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sample Images Quick Picker -->
+        <div class="mt-4 pt-4 border-t border-slate-800/80 flex flex-wrap items-center gap-2">
+          <span class="text-xs font-medium text-slate-400 mr-1">Or test with room samples:</span>
+          <template x-for="sample in sampleItems" :key="sample.name">
+            <button @click="loadSampleImage(sample)" type="button"
+                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/60 text-xs font-medium text-slate-300 hover:text-indigo-300 transition">
+              <span class="w-2 h-2 rounded-full" :class="sample.dotColor"></span>
+              <span x-text="sample.name"></span>
+            </button>
+          </template>
+        </div>
+
+        <!-- Filters Bar & Search CTA -->
+        <div class="mt-6 pt-6 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-12 gap-4 items-end">
+          <!-- Category Filter -->
+          <div class="sm:col-span-4 space-y-1.5">
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400">Category Filter (Optional)</label>
+            <select x-model="selectedCategory"
+                    class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition">
+              <option value="">Auto-Detect from YOLO (All)</option>
+              <option value="Sofa">Sofas</option>
+              <option value="Chair">Chairs & Armchairs</option>
+              <option value="Table">Tables & Desks</option>
+              <option value="Lighting">Lighting & Lamps</option>
+            </select>
+          </div>
+
+          <!-- Top-K Slider -->
+          <div class="sm:col-span-4 space-y-1.5">
+            <div class="flex justify-between items-center">
+              <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400">Matches Per Object (Top-K)</label>
+              <span class="text-xs font-bold text-indigo-400 px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20" x-text="topK"></span>
+            </div>
+            <input type="range" min="1" max="10" step="1" x-model.number="topK"
+                   class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+          </div>
+
+          <!-- Search Button -->
+          <div class="sm:col-span-4">
+            <button @click="executeSearch()" :disabled="!selectedFile || isSearching"
+                    type="button"
+                    class="w-full inline-flex items-center justify-center space-x-2 py-2.5 px-4 rounded-xl font-semibold text-sm shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-white bg-gradient-to-r from-indigo-600 via-purple-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 shadow-indigo-600/25 active:scale-[0.98]">
+              <template x-if="!isSearching">
+                <span class="inline-flex items-center gap-2">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <span>Detect & Search Objects</span>
+                </span>
+              </template>
+              <template x-if="isSearching">
+                <span class="inline-flex items-center gap-2">
+                  <svg class="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>Running YOLOv8 & CLIP...</span>
+                </span>
+              </template>
+            </button>
+          </div>
+        </div>
+
+        <!-- Error Notification -->
+        <div x-show="errorMessage" x-cloak class="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between">
+          <span x-text="errorMessage"></span>
+          <button @click="errorMessage = ''" class="text-rose-400 hover:text-white font-bold ml-2">&times;</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULTS SECTION -->
+    <section class="max-w-7xl mx-auto space-y-8">
+
+      <!-- Results Header & Object Selector Tabs -->
+      <div x-show="hasSearched" x-cloak class="space-y-4 pb-4 border-b border-slate-800">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center gap-2">
+              <span>Detected Furniture Objects</span>
+              <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+                    x-text="totalObjectsDetected + (totalObjectsDetected === 1 ? ' object' : ' objects')"></span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">Ultralytics YOLOv8 bounding boxes &bull; Individual CLIP visual embeddings &bull; Qdrant Cosine Search</p>
+          </div>
+
+          <!-- Latency Badge -->
+          <div x-show="stats" class="flex items-center gap-3 text-xs">
+            <div class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              <span class="text-slate-400">Total Latency:</span>
+              <span class="font-semibold text-emerald-400" x-text="stats.execution_time_ms + ' ms'"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Object Filter Selector Pills -->
+        <div x-show="detectedObjects.length > 1" class="flex flex-wrap items-center gap-2 pt-2">
+          <button @click="activeObjectFilter = 'all'"
+                  :class="activeObjectFilter === 'all' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25' : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'"
+                  class="px-3 py-1.5 rounded-xl text-xs font-semibold transition">
+            All Detected Objects (<span x-text="detectedObjects.length"></span>)
+          </button>
+          <template x-for="obj in detectedObjects" :key="obj.object_id">
+            <button @click="activeObjectFilter = obj.object_id"
+                    :class="activeObjectFilter === obj.object_id ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25' : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'"
+                    class="px-3 py-1.5 rounded-xl text-xs font-semibold transition inline-flex items-center gap-1.5 capitalize">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span x-text="'Object ' + obj.object_id + ': ' + obj.label"></span>
+              <span class="text-[10px] opacity-75" x-text="'(' + Math.round(obj.confidence * 100) + '%)'"></span>
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <!-- Loading Skeleton -->
+      <div x-show="isSearching" class="space-y-6">
+        <div class="h-6 bg-slate-800 rounded w-48 animate-pulse"></div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <template x-for="i in 3" :key="i">
+            <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4 space-y-4 animate-pulse">
+              <div class="h-48 bg-slate-800/80 rounded-xl"></div>
+              <div class="h-4 bg-slate-800 rounded w-3/4"></div>
+              <div class="h-3 bg-slate-800 rounded w-1/2"></div>
+              <div class="h-8 bg-slate-800 rounded"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Empty State -->
+      <div x-show="!isSearching && hasSearched && detectedObjects.length === 0" x-cloak class="text-center py-16 space-y-3">
+        <div class="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mx-auto text-slate-500">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+        </div>
+        <p class="text-slate-300 font-medium">No furniture items matched your query criteria.</p>
+        <p class="text-xs text-slate-500">Try uploading a clearer photo containing chairs, sofas, tables, or lamps.</p>
+      </div>
+
+      <!-- DETECTED OBJECTS GROUPS -->
+      <div x-show="!isSearching && detectedObjects.length > 0" class="space-y-10">
+        <template x-for="obj in filteredDetectedObjects" :key="obj.object_id">
+          <div class="rounded-2xl bg-slate-900/40 border border-slate-800/80 p-6 space-y-6 shadow-xl">
+
+            <!-- Object Group Banner -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
+              <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 font-bold text-xs"
+                     x-text="'#' + obj.object_id"></div>
+                <div>
+                  <h3 class="text-lg font-bold text-white capitalize flex items-center gap-2">
+                    <span x-text="'Detected: ' + obj.label"></span>
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400"
+                          x-text="Math.round(obj.confidence * 100) + '% Confidence'"></span>
+                  </h3>
+                  <p class="text-xs font-mono text-slate-400" x-text="'BBox Coordinates: [' + obj.bbox.join(', ') + ']'"></p>
+                </div>
+              </div>
+
+              <div class="text-xs font-semibold text-slate-400">
+                <span x-text="(obj.matches ? obj.matches.length : 0) + ' Visual Matches Found'"></span>
+              </div>
+            </div>
+
+            <!-- Matches Cards Grid for This Object -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <template x-for="match in obj.matches" :key="match.item.id">
+                <div class="group rounded-2xl bg-slate-900/90 border border-slate-800/90 hover:border-indigo-500/50 hover:shadow-xl hover:shadow-indigo-500/10 transition-all duration-300 flex flex-col overflow-hidden">
+
+                  <!-- Card Image Area -->
+                  <div class="relative h-56 w-full bg-slate-950 overflow-hidden">
+                    <img :src="match.item.image_url" :alt="match.item.name"
+                         loading="lazy"
+                         class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+
+                    <!-- Match Score Badge -->
+                    <div class="absolute top-3 right-3 px-2.5 py-1 rounded-full text-xs font-bold shadow-lg backdrop-blur-md"
+                         :class="getMatchBadgeClass(match.score)">
+                      <span x-text="formatMatchScore(match.score)"></span>
+                    </div>
+
+                    <!-- Category Tag -->
+                    <div class="absolute top-3 left-3 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-950/80 border border-slate-700/60 text-slate-200 backdrop-blur-md">
+                      <span x-text="match.item.category"></span>
+                    </div>
+
+                    <!-- Rank Badge -->
+                    <div class="absolute bottom-2 left-2 text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-950/75 text-slate-400">
+                      #<span x-text="match.rank"></span>
+                    </div>
+                  </div>
+
+                  <!-- Card Details Area -->
+                  <div class="p-5 flex-1 flex flex-col justify-between space-y-4">
+                    <div class="space-y-2">
+                      <div class="flex items-start justify-between gap-2">
+                        <h4 class="font-bold text-slate-100 text-base group-hover:text-indigo-400 transition line-clamp-1" x-text="match.item.name"></h4>
+                        <span class="text-base font-extrabold text-emerald-400 shrink-0" x-text="'$' + match.item.price.toFixed(2)"></span>
+                      </div>
+                      <p class="text-xs text-slate-400 line-clamp-2 leading-relaxed" x-text="match.item.description"></p>
+                    </div>
+
+                    <!-- Tags / Chips -->
+                    <div class="space-y-3 pt-3 border-t border-slate-800/80">
+                      <div class="flex flex-wrap gap-1.5">
+                        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-800/80 text-slate-300 font-medium" x-text="match.item.material"></span>
+                        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-800/80 text-slate-400 font-medium" x-text="match.item.color"></span>
+                      </div>
+                      <div class="flex items-center justify-between text-[11px] text-slate-500">
+                        <span x-text="match.item.dimensions"></span>
+                        <span class="text-emerald-400 font-medium">&bull; In Stock</span>
+                      </div>
+
+                      <!-- Direct Buy Action Buttons -->
+                      <div class="pt-2 flex items-center gap-2">
+                        <a :href="match.item.buy_url || match.item.image_url" target="_blank" rel="noopener noreferrer"
+                           class="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition active:scale-[0.98]">
+                          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
+                          </svg>
+                          <span>Buy Product</span>
+                        </a>
+                        <a :href="match.item.image_url" target="_blank" rel="noopener noreferrer" title="View Full Image"
+                           class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition">
+                          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                          </svg>
+                        </a>
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+              </template>
+            </div>
+
+          </div>
+        </template>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- PROCESSING STATS FOOTER -->
+  <footer class="border-t border-slate-800/80 bg-slate-950 py-6 mt-12 relative z-10">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
+      <div class="flex items-center space-x-2">
+        <span>VisionSpace AI &copy; 2026</span>
+        <span>&bull;</span>
+        <span>YOLOv8 Multi-Object Lens + Qdrant Cloud</span>
+      </div>
+      <div class="flex items-center space-x-4">
+        <span x-show="stats" class="text-slate-400">
+          Last search: <span class="text-emerald-400 font-semibold" x-text="stats ? stats.execution_time_ms + 'ms' : ''"></span>
+        </span>
+        <button @click="showSettingsModal = true" class="hover:text-indigo-400 transition">
+          Backend: <span class="font-mono text-slate-400" x-text="apiBaseUrl"></span>
+        </button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- SETTINGS MODAL (Configure API_BASE_URL) -->
+  <div x-show="showSettingsModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+    <div @click.away="showSettingsModal = false" class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+      <div class="flex justify-between items-center">
+        <h3 class="font-bold text-white text-base">Backend API Endpoint</h3>
+        <button @click="showSettingsModal = false" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+      <p class="text-xs text-slate-400">
+        When running locally, set to <code class="text-indigo-300">http://127.0.0.1:8000</code>. When on GitHub Pages, configure to point to your live Render backend URL.
+      </p>
+      <div class="space-y-1">
+        <label class="text-xs font-semibold text-slate-300">API Base URL</label>
+        <input type="text" x-model="customApiBaseUrl"
+               class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 font-mono">
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button @click="resetApiUrl()" type="button" class="px-3 py-1.5 text-xs text-slate-400 hover:text-white">Reset Default</button>
+        <button @click="saveApiUrl()" type="button" class="px-4 py-1.5 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold">Save & Test</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JAVASCRIPT LOGIC -->
+  <script>
+    // =========================================================================
+    // CONFIGURABLE API BASE URL
+    // Default is configured for local testing against FastAPI backend
+    // =========================================================================
+    const API_BASE_URL = 'http://127.0.0.1:8000';
+
+    function visualSearchApp() {
+      return {
+        // Backend Config
+        apiBaseUrl: (localStorage.getItem('visionspace_api_url') && localStorage.getItem('visionspace_api_url') !== 'http://localhost:8000')
+          ? localStorage.getItem('visionspace_api_url')
+          : API_BASE_URL,
+        customApiBaseUrl: '',
+        showSettingsModal: false,
+
+        // Engine Status
+        engineStatus: 'connecting', // 'online' | 'connecting' | 'offline'
+        engineStatusText: 'Connecting...',
+        pingLatencyMs: null,
+
+        // Upload & Search State
+        isDragging: false,
+        selectedFile: null,
+        fileName: '',
+        fileSizeFormatted: '',
+        previewUrl: null,
+        selectedCategory: '',
+        topK: 4,
+        isSearching: false,
+        hasSearched: false,
+        errorMessage: '',
+
+        // Multi-Object Results & State
+        totalObjectsDetected: 0,
+        detectedObjects: [],
+        activeObjectFilter: 'all',
+        stats: null,
+
+        // Curated Samples for Instant Testing
+        sampleItems: [
+          {
+            name: 'Living Room (Sofa & Chair)',
+            category: '',
+            url: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=600&q=80',
+            dotColor: 'bg-emerald-500'
+          },
+          {
+            name: 'Dining Space (Table & Chairs)',
+            category: '',
+            url: 'https://images.unsplash.com/photo-1615066390971-03e4e1c36ddf?auto=format&fit=crop&w=600&q=80',
+            dotColor: 'bg-amber-400'
+          },
+          {
+            name: 'Lounge Corner (Lamp & Chair)',
+            category: '',
+            url: 'https://images.unsplash.com/photo-1567538096630-e0c55bd6374c?auto=format&fit=crop&w=600&q=80',
+            dotColor: 'bg-cyan-400'
+          },
+          {
+            name: 'Reading Nook (Tripod Lamp)',
+            category: '',
+            url: 'https://images.unsplash.com/photo-1507473885765-e6ed057f782c?auto=format&fit=crop&w=600&q=80',
+            dotColor: 'bg-yellow-500'
+          },
+        ],
+
+        get filteredDetectedObjects() {
+          if (this.activeObjectFilter === 'all') {
+            return this.detectedObjects;
+          }
+          return this.detectedObjects.filter(obj => obj.object_id === this.activeObjectFilter);
+        },
+
+        async initApp() {
+          this.customApiBaseUrl = this.apiBaseUrl;
+          await this.pingEngine();
+          setInterval(() => this.pingEngine(), 45000);
+        },
+
+        async pingEngine() {
+          const start = performance.now();
+          try {
+            const res = await fetch(`${this.apiBaseUrl}/api/v1/health`, { method: 'GET' });
+            if (res.ok) {
+              const data = await res.json();
+              this.pingLatencyMs = Math.round(performance.now() - start);
+              this.engineStatus = 'online';
+              this.engineStatusText = `Online (${data.indexed_furniture_count || 0} items)`;
+            } else {
+              this.engineStatus = 'offline';
+              this.engineStatusText = 'Service Error';
+              this.pingLatencyMs = null;
+            }
+          } catch (err) {
+            this.engineStatus = 'offline';
+            this.engineStatusText = 'Backend Offline';
+            this.pingLatencyMs = null;
+          }
+        },
+
+        handleFileSelect(event) {
+          const file = event.target.files[0];
+          if (file) this.setFile(file);
+        },
+
+        handleFileDrop(event) {
+          this.isDragging = false;
+          const file = event.dataTransfer.files[0];
+          if (file) this.setFile(file);
+        },
+
+        setFile(file) {
+          if (!file.type.startsWith('image/')) {
+            this.errorMessage = 'Please upload a valid image file (JPEG, PNG, or WEBP).';
+            return;
+          }
+          this.errorMessage = '';
+          this.selectedFile = file;
+          this.fileName = file.name;
+          this.fileSizeFormatted = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+          this.previewUrl = URL.createObjectURL(file);
+          this.detectedObjects = [];
+          this.totalObjectsDetected = 0;
+          this.activeObjectFilter = 'all';
+        },
+
+        async loadSampleImage(sample) {
+          this.errorMessage = '';
+          try {
+            const resp = await fetch(sample.url);
+            const blob = await resp.blob();
+            const file = new File([blob], `${sample.name.toLowerCase().replace(/\s+/g, '_')}.jpg`, { type: 'image/jpeg' });
+            this.setFile(file);
+            if (sample.category) {
+              this.selectedCategory = sample.category;
+            }
+          } catch (e) {
+            this.errorMessage = 'Failed to load demo image from remote source.';
+          }
+        },
+
+        clearImage() {
+          this.selectedFile = null;
+          this.fileName = '';
+          this.fileSizeFormatted = '';
+          this.detectedObjects = [];
+          this.totalObjectsDetected = 0;
+          this.hasSearched = false;
+          if (this.previewUrl) {
+            URL.revokeObjectURL(this.previewUrl);
+            this.previewUrl = null;
+          }
+          if (this.$refs.fileInput) {
+            this.$refs.fileInput.value = '';
+          }
+        },
+
+        async executeSearch() {
+          if (!this.selectedFile) return;
+
+          this.isSearching = true;
+          this.errorMessage = '';
+          const formData = new FormData();
+          formData.append('file', this.selectedFile);
+          formData.append('top_k', this.topK);
+          if (this.selectedCategory) {
+            formData.append('category', this.selectedCategory);
+          }
+
+          try {
+            const res = await fetch(`${this.apiBaseUrl}/api/v1/search-furniture`, {
+              method: 'POST',
+              body: formData,
+            });
+
+            if (!res.ok) {
+              const errData = await res.json().catch(() => ({}));
+              throw new Error(errData.detail || `Search failed with status ${res.status}`);
+            }
+
+            const data = await res.json();
+            this.totalObjectsDetected = data.total_objects_detected || (data.detected_objects ? data.detected_objects.length : 0);
+            this.detectedObjects = data.detected_objects || [];
+
+            // Fallback for legacy response structure
+            if (this.detectedObjects.length === 0 && data.results && data.results.length > 0) {
+              this.detectedObjects = [{
+                object_id: 1,
+                label: 'full image',
+                confidence: 1.0,
+                bbox: [0, 0, 100, 100],
+                matches: data.results,
+              }];
+              this.totalObjectsDetected = 1;
+            }
+
+            this.activeObjectFilter = 'all';
+            this.stats = {
+              execution_time_ms: data.execution_time_ms,
+              features_summary: data.features_summary,
+            };
+            this.hasSearched = true;
+          } catch (err) {
+            this.errorMessage = `Search request failed: ${err.message}. Make sure backend is running at ${this.apiBaseUrl}`;
+          } finally {
+            this.isSearching = false;
+          }
+        },
+
+        formatMatchScore(score) {
+          const pct = Math.min(100, Math.max(0, Math.round(score * 100)));
+          return `${pct}% Match`;
+        },
+
+        getMatchBadgeClass(score) {
+          if (score >= 0.82) return 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+          if (score >= 0.68) return 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30';
+          return 'bg-slate-800 text-slate-300 border border-slate-700';
+        },
+
+        saveApiUrl() {
+          let url = this.customApiBaseUrl.trim();
+          if (url.endsWith('/')) url = url.slice(0, -1);
+          this.apiBaseUrl = url;
+          localStorage.setItem('visionspace_api_url', url);
+          this.showSettingsModal = false;
+          this.pingEngine();
+        },
+
+        resetApiUrl() {
+          this.customApiBaseUrl = API_BASE_URL;
+          this.apiBaseUrl = API_BASE_URL;
+          localStorage.removeItem('visionspace_api_url');
+          this.showSettingsModal = false;
+          this.pingEngine();
+        }
+      };
+    }
+  </script>
+</body>
+</html>

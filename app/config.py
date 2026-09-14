@@ -11,6 +11,9 @@ class Settings(BaseModel):
     APP_VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
 
+    # CORS Configuration
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")
+
     # Vision Models
     CLIP_MODEL_NAME: str = os.getenv("CLIP_MODEL_NAME", "openai/clip-vit-base-patch32")
     CLIP_EMBEDDING_DIM: int = 512
@@ -18,9 +21,9 @@ class Settings(BaseModel):
     DEVICE: str = os.getenv("DEVICE", "cpu")
 
     # Qdrant Vector DB
-    QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "furniture_items")
-    # Set QDRANT_URL to http://localhost:6333 for remote, or leave None for in-memory / local storage
-    QDRANT_URL: Optional[str] = os.getenv("QDRANT_URL", None)
+    QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "furniture")
+    QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
+    QDRANT_API_KEY: Optional[str] = os.getenv("QDRANT_API_KEY", None)
     QDRANT_STORAGE_PATH: Optional[str] = os.getenv("QDRANT_STORAGE_PATH", None)
 
     # Preprocessor defaults
