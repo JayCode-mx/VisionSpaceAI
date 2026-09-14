@@ -12,7 +12,8 @@ class Settings(BaseModel):
     API_PREFIX: str = "/api/v1"
 
     # CORS Configuration
-    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")
+    CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", os.getenv("ALLOWED_ORIGINS", "*"))
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", os.getenv("CORS_ORIGINS", "*"))
 
     # Vision Models
     CLIP_MODEL_NAME: str = os.getenv("CLIP_MODEL_NAME", "openai/clip-vit-base-patch32")
@@ -25,6 +26,7 @@ class Settings(BaseModel):
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
     QDRANT_API_KEY: Optional[str] = os.getenv("QDRANT_API_KEY", None)
     QDRANT_STORAGE_PATH: Optional[str] = os.getenv("QDRANT_STORAGE_PATH", None)
+    SERPAPI_KEY: Optional[str] = os.getenv("SERPAPI_KEY", "ba77070c6cfad942846a5e65e2c04dd8cc7bd6b4f57b24da9cb0783cda1edcd5")
 
     # Preprocessor defaults
     TARGET_IMAGE_SIZE: tuple[int, int] = (224, 224)

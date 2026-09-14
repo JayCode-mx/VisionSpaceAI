@@ -6,7 +6,10 @@ from app.models import (
     DetectedObject,
     ExtractedFeaturesSummary,
     FurnitureSearchResponse,
+    FurnitureDiscoveredItem,
     HealthResponse,
+    LensVisualMatch,
+    LensSearchResponse,
 )
 
 __all__ = [
@@ -15,5 +18,8 @@ __all__ = [
     "DetectedObject",
     "ExtractedFeaturesSummary",
     "FurnitureSearchResponse",
+    "FurnitureDiscoveredItem",
     "HealthResponse",
+    "LensVisualMatch",
+    "LensSearchResponse",
 ]

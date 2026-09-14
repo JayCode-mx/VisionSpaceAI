@@ -34,6 +34,8 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         data = response.json()
+        self.assertEqual(data["status"], "online")
+        self.assertEqual(data["engine"], "VisionSpace AI Neural Engine")
         self.assertIn("service", data)
         self.assertIn("docs_url", data)
 
@@ -59,36 +61,68 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         self.assertIn("category", first_item)
         self.assertIn("price", first_item)
 
-    def test_search_furniture_success(self):
+    @unittest.mock.patch("app.main.lens_service.get_visual_matches")
+    def test_search_furniture_success(self, mock_lens):
+        mock_lens.return_value = [
+            {
+                "title": "Modern Velvet Armchair",
+                "source": "Wayfair",
+                "price": "$299.00",
+                "link": "https://www.wayfair.com/furniture/pdp/chair-123.html",
+                "thumbnail": "https://serpapi.com/th?q=chair",
+            },
+            {
+                "title": "Mid-Century Lounge Chair",
+                "source": "IKEA",
+                "price": "$179.99",
+                "link": "https://www.ikea.com/item-456.html",
+                "thumbnail": "https://serpapi.com/th?q=ikea-chair",
+            },
+            {
+                "title": "Nordic Accent Chair",
+                "source": "Amazon",
+                "price": "$145.50",
+                "link": "https://www.amazon.com/dp/B0123456",
+                "thumbnail": "https://serpapi.com/th?q=amazon-chair",
+            },
+        ]
+
         img_bytes = self._create_sample_image()
         response = self.client.post(
             "/api/v1/search-furniture",
             files={"file": ("query_furniture.png", img_bytes, "image/png")},
-            data={"top_k": 3, "include_mobilenet_features": "true"},
+            data={"top_k": 3},
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
 
-        self.assertIn("query_id", data)
-        self.assertEqual(data["total_matches"], 3)
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["engine"], "VisionSpace Spatial Match v2.0")
+        self.assertGreaterEqual(data["total_objects_detected"], 1)
+        self.assertIn("detected_objects", data)
+        self.assertIsInstance(data["execution_time_ms"], float)
+        self.assertIsInstance(data["results"], list)
         self.assertEqual(len(data["results"]), 3)
 
         # Check top result
         top_match = data["results"][0]
-        self.assertEqual(top_match["rank"], 1)
-        self.assertIsInstance(top_match["score"], float)
-        self.assertIn("name", top_match["item"])
-        self.assertIn("category", top_match["item"])
-        self.assertIn("price", top_match["item"])
+        self.assertEqual(top_match["title"], "Modern Velvet Armchair")
+        self.assertEqual(top_match["source"], "Wayfair")
+        self.assertEqual(top_match["price"], "$299.00")
+        self.assertEqual(top_match["link"], "https://www.wayfair.com/furniture/pdp/chair-123.html")
+        self.assertEqual(top_match["thumbnail"], "https://serpapi.com/th?q=chair")
 
-        # Check features summary
-        features = data["features_summary"]
-        self.assertEqual(features["clip_embedding_dim"], 512)
-        self.assertEqual(features["mobilenet_feature_dim"], 1280)
-        self.assertEqual(features["preprocessor_target_size"], [224, 224])
-        self.assertTrue(features["clahe_applied"])
-
-    def test_search_furniture_with_category_filter(self):
+    @unittest.mock.patch("app.main.lens_service.get_visual_matches")
+    def test_search_furniture_with_category_filter(self, mock_lens):
+        mock_lens.return_value = [
+            {
+                "title": "Dining Chair Set of 2",
+                "source": "Target",
+                "price": "$120.00",
+                "link": "https://www.target.com/p/chair",
+                "thumbnail": "https://serpapi.com/th?q=target-chair",
+            }
+        ]
         img_bytes = self._create_sample_image()
         response = self.client.post(
             "/api/v1/search-furniture",
@@ -98,9 +132,9 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
 
+        self.assertEqual(data["status"], "success")
         self.assertGreater(len(data["results"]), 0)
-        for match in data["results"]:
-            self.assertEqual(match["item"]["category"], "Chair")
+        self.assertEqual(data["results"][0]["title"], "Dining Chair Set of 2")
 
     def test_search_furniture_invalid_file(self):
         fake_file = io.BytesIO(b"This is not a real image file.")
@@ -110,7 +144,17 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_multi_object_response_structure(self):
+    @unittest.mock.patch("app.main.lens_service.get_visual_matches")
+    def test_search_furniture_lens_results(self, mock_lens):
+        mock_lens.return_value = [
+            {
+                "title": "Minimalist Coffee Table",
+                "source": "Article",
+                "price": "$349.00",
+                "link": "https://www.article.com/table",
+                "thumbnail": "https://serpapi.com/th?q=table",
+            }
+        ]
         img_bytes = self._create_sample_image(size=(400, 300))
         response = self.client.post(
             "/api/v1/search-furniture",
@@ -120,20 +164,82 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
 
+        self.assertEqual(data["status"], "success")
         self.assertIn("total_objects_detected", data)
-        self.assertIn("detected_objects", data)
-        self.assertGreater(data["total_objects_detected"], 0)
-        self.assertGreater(len(data["detected_objects"]), 0)
+        self.assertIn("execution_time_ms", data)
+        self.assertIn("results", data)
+        self.assertEqual(len(data["results"]), 1)
+        self.assertEqual(data["results"][0]["title"], "Minimalist Coffee Table")
 
-        first_obj = data["detected_objects"][0]
-        self.assertIn("object_id", first_obj)
-        self.assertIn("label", first_obj)
-        self.assertIn("confidence", first_obj)
-        self.assertIn("bbox", first_obj)
-        self.assertEqual(len(first_obj["bbox"]), 4)
-        self.assertIn("matches", first_obj)
-        self.assertGreater(len(first_obj["matches"]), 0)
+    @unittest.mock.patch("app.main.lens_service.search_multi_crops")
+    def test_search_furniture_consolidated_items_response(self, mock_multi):
+        mock_multi.return_value = [
+            {
+                "item_id": 1,
+                "detected_name": "Teal Tufted Leather Sofa",
+                "category": "Sofa",
+                "bbox": [20, 30, 200, 150],
+                "confidence": 0.89,
+                "matches": [
+                    {
+                        "title": "Article Sven Teal Tufted Sofa",
+                        "source": "West Elm",
+                        "price": "$1,499.00",
+                        "link": "https://www.westelm.com/sofa",
+                        "thumbnail": "https://img.thumb/sofa.jpg",
+                    }
+                ],
+            },
+            {
+                "item_id": 2,
+                "detected_name": "Modern Tiered Wooden Coffee Table",
+                "category": "Table",
+                "bbox": [60, 120, 180, 220],
+                "confidence": 0.75,
+                "matches": [
+                    {
+                        "title": "Tiered Coffee Table",
+                        "source": "Wayfair",
+                        "price": "$299.00",
+                        "link": "https://www.wayfair.com/table",
+                        "thumbnail": "https://img.thumb/table.jpg",
+                    }
+                ],
+            },
+        ]
+
+        img_bytes = self._create_sample_image(size=(400, 300))
+        response = self.client.post(
+            "/api/v1/search-furniture",
+            files={"file": ("living_room.png", img_bytes, "image/png")},
+            data={"top_k": 3},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["total_items"], 2)
+        self.assertIn("execution_time_ms", data)
+        self.assertIn("items", data)
+        self.assertEqual(len(data["items"]), 2)
+
+        # Check item 1
+        item1 = data["items"][0]
+        self.assertEqual(item1["item_id"], 1)
+        self.assertEqual(item1["detected_name"], "Teal Tufted Leather Sofa")
+        self.assertEqual(item1["category"], "Sofa")
+        self.assertEqual(len(item1["matches"]), 1)
+        self.assertEqual(item1["matches"][0]["source"], "West Elm")
+
+        # Check item 2
+        item2 = data["items"][1]
+        self.assertEqual(item2["item_id"], 2)
+        self.assertEqual(item2["detected_name"], "Modern Tiered Wooden Coffee Table")
+        self.assertEqual(item2["category"], "Table")
+        self.assertEqual(len(item2["matches"]), 1)
+        self.assertEqual(item2["matches"][0]["source"], "Wayfair")
 
 
 if __name__ == "__main__":
     unittest.main()
+

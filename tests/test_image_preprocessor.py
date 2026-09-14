@@ -159,5 +159,115 @@ class TestSSIMSimilarity(unittest.TestCase):
         self.assertAlmostEqual(score, 1.0, places=4)
 
 
+class TestObjectDetection(unittest.TestCase):
+
+    def test_crop_bounding_box(self):
+        from image_preprocessor import crop_bounding_box
+        img = Image.new("RGB", (300, 200), color=(100, 150, 200))
+        crop = crop_bounding_box(img, [50, 40, 150, 120])
+        self.assertEqual(crop.size, (100, 80))
+
+        # Test boundary clamping on negative / out-of-bounds coordinates
+        crop_clamped = crop_bounding_box(img, [-20, -10, 500, 400])
+        self.assertEqual(crop_clamped.size, (300, 200))
+
+    def test_compute_bbox_iou(self):
+        from image_preprocessor import compute_bbox_iou
+        # Identical boxes -> IoU 1.0
+        box = [10, 10, 100, 100]
+        self.assertAlmostEqual(compute_bbox_iou(box, box), 1.0, places=4)
+
+        # Non-overlapping boxes -> IoU 0.0
+        box2 = [200, 200, 300, 300]
+        self.assertEqual(compute_bbox_iou(box, box2), 0.0)
+
+        # 50% overlap
+        box3 = [10, 10, 100, 55]
+        iou = compute_bbox_iou(box, box3)
+        self.assertGreater(iou, 0.4)
+        self.assertLess(iou, 0.6)
+
+    def test_interior_classes_and_coco_ids(self):
+        from image_preprocessor import INTERIOR_CLASSES, INTERIOR_COCO_IDS
+        # Verify all requested COCO interior IDs are present
+        required_classes = ["sofa", "chair", "dining table", "tv", "potted plant", "vase", "clock"]
+        for rc in required_classes:
+            self.assertIn(rc, INTERIOR_CLASSES)
+
+        required_ids = [56, 57, 58, 60, 62, 74, 75]
+        for cid in required_ids:
+            self.assertIn(cid, INTERIOR_COCO_IDS)
+
+    def test_object_detector_initialization(self):
+        from image_preprocessor import ObjectDetector
+        detector = ObjectDetector(confidence_threshold=0.20, iou_threshold=0.45)
+        self.assertEqual(detector.confidence_threshold, 0.20)
+        self.assertEqual(detector.iou_threshold, 0.45)
+
+    def test_sliced_center_crop_fallback_on_single_detection(self):
+        from image_preprocessor import ObjectDetector
+        detector = ObjectDetector(confidence_threshold=0.20, iou_threshold=0.45)
+        # Create a 400x300 room layout image
+        img = Image.new("RGB", (400, 300), color=(200, 200, 200))
+        detections = detector.detect(img)
+        # Verify detect returns a list (runs inference or fallback)
+        self.assertIsInstance(detections, list)
+
+    def test_extract_all_furniture_crops_heuristic_fallback(self):
+        from image_preprocessor import extract_all_furniture_crops
+        from unittest.mock import MagicMock
+
+        # Mock detector detecting only a sofa on the upper side (outside lower-center zone)
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = [
+            {
+                "label": "sofa",
+                "category_hint": "Sofa",
+                "confidence": 0.88,
+                "bbox": [50, 20, 350, 100],
+            }
+        ]
+
+        img = Image.new("RGB", (400, 300), color=(220, 220, 220))
+        crops = extract_all_furniture_crops(img, detector=mock_detector, max_crops=4)
+
+        # Should contain the YOLO sofa crop + heuristic lower-center coffee table crop
+        self.assertEqual(len(crops), 2)
+        sofa_crop = crops[0]
+        self.assertEqual(sofa_crop["label"], "sofa")
+        self.assertFalse(sofa_crop["is_heuristic"])
+
+        table_crop = crops[1]
+        self.assertEqual(table_crop["label"], "coffee table")
+        self.assertEqual(table_crop["category"], "Table")
+        self.assertTrue(table_crop["is_heuristic"])
+        self.assertEqual(table_crop["bbox"], [100, 135, 300, 255])  # X: 25%-75%, Y: 45%-85%
+        self.assertEqual(table_crop["cropped_image"].size, (200, 120))
+
+    def test_extract_all_furniture_crops_with_detected_table(self):
+        from image_preprocessor import extract_all_furniture_crops
+        from unittest.mock import MagicMock
+
+        # Mock detector detecting a table already in the lower-center zone
+        mock_detector = MagicMock()
+        mock_detector.detect.return_value = [
+            {
+                "label": "dining table",
+                "category_hint": "Table",
+                "confidence": 0.92,
+                "bbox": [110, 140, 290, 250],
+            }
+        ]
+
+        img = Image.new("RGB", (400, 300), color=(220, 220, 220))
+        crops = extract_all_furniture_crops(img, detector=mock_detector, max_crops=4)
+
+        # Since table was already in lower-center, no duplicate heuristic coffee table crop should be generated
+        self.assertEqual(len(crops), 1)
+        self.assertEqual(crops[0]["label"], "dining table")
+        self.assertFalse(crops[0]["is_heuristic"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -41,14 +41,24 @@ class ExtractedFeaturesSummary(BaseModel):
     clahe_applied: bool = True
 
 
+class FurnitureDiscoveredItem(BaseModel):
+    item_id: int = Field(..., description="1-based index of the detected item")
+    detected_name: str = Field(..., description="Smart name derived from top visual matches or detector")
+    category: str = Field(..., description="Furniture category (e.g. Sofa, Table, Chair, Decor)")
+    bbox: Optional[List[int]] = Field(None, description="Bounding box [x1, y1, x2, y2]")
+    confidence: Optional[float] = Field(None, description="Detection confidence score")
+    matches: List[Dict[str, Any]] = Field(default_factory=list, description="Top store buy links and visual matches")
+
+
 class FurnitureSearchResponse(BaseModel):
-    query_id: str = Field(..., description="Unique search request identifier")
-    total_objects_detected: int = Field(default=0, description="Total number of objects detected")
-    detected_objects: List[DetectedObject] = Field(default_factory=list, description="List of detected objects and their visual matches")
-    total_matches: int = Field(default=0, description="Total number of matched items returned (primary/aggregated)")
-    results: List[FurnitureSearchResult] = Field(default_factory=list, description="Ranked list of similar furniture for backward compatibility")
+    status: str = Field(default="success", description="Status of the search query")
+    engine: str = Field(default="VisionSpace Spatial Match v2.0", description="Visual search engine descriptor")
+    total_items: int = Field(default=0, description="Total number of furniture items detected")
     execution_time_ms: float = Field(..., description="End-to-end latency in milliseconds")
-    features_summary: Optional[ExtractedFeaturesSummary] = Field(None, description="Visual feature extraction info")
+    items: List[FurnitureDiscoveredItem] = Field(default_factory=list, description="Detected furniture items and matching products")
+    total_objects_detected: Optional[int] = Field(None, description="Legacy count of detected objects")
+    detected_objects: List[Dict[str, Any]] = Field(default_factory=list, description="Detected objects and bounding boxes")
+    results: List[Dict[str, Any]] = Field(default_factory=list, description="Consolidated visual matches")
 
 
 class HealthResponse(BaseModel):
@@ -60,3 +70,22 @@ class HealthResponse(BaseModel):
     mobilenet_loaded: bool
     qdrant_connected: bool
     indexed_furniture_count: int
+
+
+class LensVisualMatch(BaseModel):
+    position: int = Field(..., description="Rank / position in visual matches")
+    title: str = Field(..., description="Product or webpage title")
+    link: str = Field(..., description="Direct link to the matching store or webpage")
+    source: Optional[str] = Field(None, description="Retailer or platform name")
+    price: Optional[str] = Field(None, description="Formatted price string if available")
+    extracted_price: Optional[float] = Field(None, description="Numeric price extracted from listing")
+    thumbnail: Optional[str] = Field(None, description="Thumbnail image URL")
+    image: Optional[str] = Field(None, description="Full source image URL if available")
+
+
+class LensSearchResponse(BaseModel):
+    engine: str = Field(default="VisionSpace Spatial Match v2.0", description="Visual search engine descriptor")
+    total_matches: int
+    visual_matches: List[LensVisualMatch]
+    execution_time_ms: float
+

@@ -327,3 +327,182 @@ def compute_ssim_similarity(
         data_range=effective_data_range,
     )
     return float(score)
+
+
+def crop_bounding_box(
+    image: Image.Image,
+    bbox: Union[List[int], Tuple[int, int, int, int]],
+) -> Image.Image:
+    """Crop bounding box [x1, y1, x2, y2] from a PIL Image with boundary clamping."""
+    w, h = image.size
+    x1, y1, x2, y2 = bbox
+    x1 = max(0, min(int(x1), w - 1))
+    y1 = max(0, min(int(y1), h - 1))
+    x2 = max(x1 + 1, min(int(x2), w))
+    y2 = max(y1 + 1, min(int(y2), h))
+    return image.crop((x1, y1, x2, y2))
+
+
+# Re-export YOLOv8 ObjectDetector and interior classes for convenience
+try:
+    from app.object_detector import (
+        ObjectDetector,
+        INTERIOR_CLASSES,
+        LABEL_TO_CATEGORY,
+        INTERIOR_COCO_IDS,
+        compute_bbox_iou,
+    )
+except ImportError:
+    try:
+        from object_detector import (
+            ObjectDetector,
+            INTERIOR_CLASSES,
+            LABEL_TO_CATEGORY,
+            INTERIOR_COCO_IDS,
+            compute_bbox_iou,
+        )
+    except ImportError:
+        ObjectDetector = None
+        INTERIOR_CLASSES = {}
+        LABEL_TO_CATEGORY = {}
+        INTERIOR_COCO_IDS = {}
+        compute_bbox_iou = None
+
+
+_default_detector = None
+
+
+def get_default_detector():
+    """Lazily instantiate or return shared ObjectDetector instance."""
+    global _default_detector
+    if _default_detector is None and ObjectDetector is not None:
+        try:
+            _default_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.20, iou_threshold=0.45)
+        except Exception:
+            _default_detector = None
+    return _default_detector
+
+
+def extract_all_furniture_crops(
+    image: Image.Image,
+    detector: Optional[Any] = None,
+    max_crops: int = 4,
+) -> List[dict]:
+    """Hybrid Region Extractor combining YOLOv8 and Heuristic Region Sampling.
+
+    1. Primary Stage (YOLOv8):
+       Run YOLO detection to identify explicit bounding boxes (sofas, chairs, tables, TV units).
+    2. Coverage Check:
+       Check if a table/surface object was detected in the lower-center region
+       (Y: 45%-85%, X: 25%-75%).
+    3. Heuristic Fallback:
+       If no table box is detected in that region, automatically generate a candidate
+       bounding box for the lower-center quadrant (where living room coffee tables sit).
+    4. Crop all generated bounding boxes (YOLO boxes + Heuristic Coffee Table box).
+
+    Args:
+        image: Original PIL Image.
+        detector: Optional ObjectDetector instance. If None, default detector is loaded.
+        max_crops: Maximum number of furniture crops to extract (default: 4).
+
+    Returns:
+        List of crop dictionaries with bounding boxes and cropped PIL images.
+    """
+    w, h = image.size
+    crops: List[dict] = []
+
+    # 1. Primary Stage (YOLOv8)
+    if detector is None:
+        detector = get_default_detector()
+
+    detected_raw = []
+    if detector is not None:
+        try:
+            detected_raw = detector.detect(image)
+        except Exception as exc:
+            print(f"Warning: YOLO detector failed ({exc}), falling back to heuristic crops.")
+            detected_raw = []
+
+    # 2. Coverage Check: Check if table/surface object is detected in lower-center region
+    # Lower-center target region: Y: 45%-85%, X: 25%-75%
+    lc_x1 = int(0.25 * w)
+    lc_y1 = int(0.45 * h)
+    lc_x2 = int(0.75 * w)
+    lc_y2 = int(0.85 * h)
+    lc_box = [lc_x1, lc_y1, lc_x2, lc_y2]
+
+    table_in_lower_center = False
+    for det in detected_raw:
+        label = str(det.get("label", "")).lower()
+        cat = str(det.get("category_hint", "")).lower()
+        bbox = det.get("bbox", [0, 0, 0, 0])
+
+        is_table = any(t in label for t in ["table", "desk", "coffee table"]) or "table" in cat
+        if is_table:
+            # Check overlap or center point in lower-center zone
+            overlap = compute_bbox_iou(bbox, lc_box) if compute_bbox_iou else 0.0
+            cx = (bbox[0] + bbox[2]) / 2.0
+            cy = (bbox[1] + bbox[3]) / 2.0
+            if overlap > 0.15 or (lc_x1 <= cx <= lc_x2 and lc_y1 <= cy <= lc_y2):
+                table_in_lower_center = True
+                break
+
+    # Add valid YOLO detections
+    for det in detected_raw:
+        bbox = det["bbox"]
+        cropped = det.get("cropped_image")
+        if cropped is None:
+            cropped = crop_bounding_box(image, bbox)
+
+        crops.append({
+            "item_id": len(crops) + 1,
+            "label": det.get("label", "furniture"),
+            "category": det.get("category_hint", "Furniture"),
+            "confidence": round(float(det.get("confidence", 0.85)), 4),
+            "bbox": bbox,
+            "cropped_image": cropped,
+            "is_heuristic": False,
+        })
+
+    # 3. Heuristic Fallback: If no table box is detected in lower-center region,
+    # automatically generate a candidate bounding box for the lower-center quadrant
+    if not table_in_lower_center and w >= 80 and h >= 80:
+        # Check if an existing YOLO box heavily overlaps the lower-center quadrant
+        heavy_overlap = False
+        for c in crops:
+            if compute_bbox_iou and compute_bbox_iou(c["bbox"], lc_box) > 0.65:
+                heavy_overlap = True
+                break
+
+        if not heavy_overlap:
+            heuristic_crop = crop_bounding_box(image, lc_box)
+            crops.append({
+                "item_id": len(crops) + 1,
+                "label": "coffee table",
+                "category": "Table",
+                "confidence": 0.55,
+                "bbox": lc_box,
+                "cropped_image": heuristic_crop,
+                "is_heuristic": True,
+            })
+
+    # Fallback if no crops detected at all: full image
+    if len(crops) == 0:
+        crops.append({
+            "item_id": 1,
+            "label": "furniture",
+            "category": "Furniture",
+            "confidence": 1.0,
+            "bbox": [0, 0, w, h],
+            "cropped_image": image.copy(),
+            "is_heuristic": False,
+        })
+
+    # Limit to max_crops
+    crops = crops[:max_crops]
+
+    # Re-index item_ids sequentially
+    for idx, c in enumerate(crops, start=1):
+        c["item_id"] = idx
+
+    return crops

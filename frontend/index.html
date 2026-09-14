@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VisionSpace AI — Multi-Object Visual Furniture Search (YOLOv8 & CLIP)</title>
-  <meta name="description" content="Google Lens-style multi-object visual search for designer furniture powered by Ultralytics YOLOv8, OpenCV CLAHE, PyTorch CLIP embeddings, and Qdrant Cloud.">
+  <meta name="description" content="Spatial neural multi-object visual search for designer furniture powered by Ultralytics YOLOv8, OpenCV CLAHE, and high-precision visual discovery.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -79,7 +79,7 @@
         </div>
         <div>
           <span class="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">VisionSpace AI</span>
-          <span class="hidden sm:inline-block ml-2 text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">YOLOv8 Lens Mode</span>
+          <span class="hidden sm:inline-block ml-2 text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Neural Vision Mode</span>
         </div>
       </div>
 
@@ -173,7 +173,7 @@
               <p class="text-xs text-slate-500">Supports room photos with multiple furniture items (JPEG, PNG, WEBP)</p>
             </div>
 
-            <!-- Image Loaded Preview with Lens Overlay -->
+            <!-- Image Loaded Preview with Spatial Detection Overlay -->
             <div x-show="previewUrl" x-cloak class="flex flex-col sm:flex-row items-center gap-6 w-full max-w-md pointer-events-auto">
               <div class="relative w-40 h-40 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 shadow-md shrink-0 group/img">
                 <img :src="previewUrl" alt="Query Preview" class="w-full h-full object-cover">
@@ -253,7 +253,7 @@
                     <circle cx="11" cy="11" r="8"></circle>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                   </svg>
-                  <span>Detect & Search Objects</span>
+                  <span>Search Visual Matches</span>
                 </span>
               </template>
               <template x-if="isSearching">
@@ -262,7 +262,7 @@
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  <span>Running YOLOv8 & CLIP...</span>
+                  <span>Discovering Matches...</span>
                 </span>
               </template>
             </button>
@@ -280,16 +280,16 @@
     <!-- RESULTS SECTION -->
     <section class="max-w-7xl mx-auto space-y-8">
 
-      <!-- Results Header & Object Selector Tabs -->
+      <!-- Results Header -->
       <div x-show="hasSearched" x-cloak class="space-y-4 pb-4 border-b border-slate-800">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 class="text-xl font-bold text-white flex items-center gap-2">
-              <span>Detected Furniture Objects</span>
-              <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
-                    x-text="totalObjectsDetected + (totalObjectsDetected === 1 ? ' object' : ' objects')"></span>
+              <span>Neural Visual Matches</span>
+              <span class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                    x-text="items.length > 0 ? (items.length + (items.length === 1 ? ' detected furniture piece' : ' detected furniture pieces')) : (results.length + (results.length === 1 ? ' result' : ' results'))"></span>
             </h2>
-            <p class="text-xs text-slate-400 mt-0.5">Ultralytics YOLOv8 bounding boxes &bull; Individual CLIP visual embeddings &bull; Qdrant Cosine Search</p>
+            <p class="text-xs text-slate-400 mt-0.5">Real-time spatial discovery across verified furniture merchants &bull; Direct purchase links</p>
           </div>
 
           <!-- Latency Badge -->
@@ -300,35 +300,17 @@
                 <polyline points="12 6 12 12 16 14"></polyline>
               </svg>
               <span class="text-slate-400">Total Latency:</span>
-              <span class="font-semibold text-emerald-400" x-text="stats.execution_time_ms + ' ms'"></span>
+              <span class="font-semibold text-emerald-400" x-text="stats ? stats.execution_time_ms + ' ms' : ''"></span>
             </div>
           </div>
-        </div>
-
-        <!-- Object Filter Selector Pills -->
-        <div x-show="detectedObjects.length > 1" class="flex flex-wrap items-center gap-2 pt-2">
-          <button @click="activeObjectFilter = 'all'"
-                  :class="activeObjectFilter === 'all' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25' : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'"
-                  class="px-3 py-1.5 rounded-xl text-xs font-semibold transition">
-            All Detected Objects (<span x-text="detectedObjects.length"></span>)
-          </button>
-          <template x-for="obj in detectedObjects" :key="obj.object_id">
-            <button @click="activeObjectFilter = obj.object_id"
-                    :class="activeObjectFilter === obj.object_id ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25' : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'"
-                    class="px-3 py-1.5 rounded-xl text-xs font-semibold transition inline-flex items-center gap-1.5 capitalize">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-              <span x-text="'Object ' + obj.object_id + ': ' + obj.label"></span>
-              <span class="text-[10px] opacity-75" x-text="'(' + Math.round(obj.confidence * 100) + '%)'"></span>
-            </button>
-          </template>
         </div>
       </div>
 
       <!-- Loading Skeleton -->
       <div x-show="isSearching" class="space-y-6">
         <div class="h-6 bg-slate-800 rounded w-48 animate-pulse"></div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          <template x-for="i in 3" :key="i">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          <template x-for="i in 4" :key="i">
             <div class="rounded-2xl bg-slate-900/60 border border-slate-800 p-4 space-y-4 animate-pulse">
               <div class="h-48 bg-slate-800/80 rounded-xl"></div>
               <div class="h-4 bg-slate-800 rounded w-3/4"></div>
@@ -340,101 +322,90 @@
       </div>
 
       <!-- Empty State -->
-      <div x-show="!isSearching && hasSearched && detectedObjects.length === 0" x-cloak class="text-center py-16 space-y-3">
+      <div x-show="!isSearching && hasSearched && items.length === 0 && results.length === 0" x-cloak class="text-center py-16 space-y-3">
         <div class="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mx-auto text-slate-500">
           <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
           </svg>
         </div>
-        <p class="text-slate-300 font-medium">No furniture items matched your query criteria.</p>
-        <p class="text-xs text-slate-500">Try uploading a clearer photo containing chairs, sofas, tables, or lamps.</p>
+        <p class="text-slate-300 font-medium">No live web matches found for this image.</p>
+        <p class="text-xs text-slate-500">Try uploading a clearer photo or a different angle.</p>
       </div>
 
-      <!-- DETECTED OBJECTS GROUPS -->
-      <div x-show="!isSearching && detectedObjects.length > 0" class="space-y-10">
-        <template x-for="obj in filteredDetectedObjects" :key="obj.object_id">
-          <div class="rounded-2xl bg-slate-900/40 border border-slate-800/80 p-6 space-y-6 shadow-xl">
-
-            <!-- Object Group Banner -->
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
+      <!-- MULTI-OBJECT DETECTED ITEMS COLLECTIONS -->
+      <div x-show="!isSearching && items.length > 0" class="space-y-8">
+        <template x-for="item in items" :key="item.item_id">
+          <div class="rounded-2xl bg-slate-900/85 border border-slate-800 shadow-xl shadow-black/40 overflow-hidden">
+            
+            <!-- Item Collection Header -->
+            <div class="p-5 bg-gradient-to-r from-slate-900 via-slate-800/75 to-slate-900 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div class="flex items-center gap-3">
-                <div class="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 font-bold text-xs"
-                     x-text="'#' + obj.object_id"></div>
+                <span class="px-2.5 py-1 rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 font-bold text-xs shrink-0"
+                      x-text="'Item #' + item.item_id"></span>
                 <div>
-                  <h3 class="text-lg font-bold text-white capitalize flex items-center gap-2">
-                    <span x-text="'Detected: ' + obj.label"></span>
-                    <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400"
-                          x-text="Math.round(obj.confidence * 100) + '% Confidence'"></span>
-                  </h3>
-                  <p class="text-xs font-mono text-slate-400" x-text="'BBox Coordinates: [' + obj.bbox.join(', ') + ']'"></p>
+                  <h3 class="text-base font-bold text-white leading-tight" x-text="item.detected_name"></h3>
+                  <div class="flex items-center gap-2 mt-1">
+                    <span class="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700/60 text-slate-300 text-[11px] font-semibold"
+                          x-text="item.category"></span>
+                    <span x-show="item.confidence" class="text-[11px] text-emerald-400 font-medium"
+                          x-text="Math.round(item.confidence * 100) + '% match confidence'"></span>
+                  </div>
                 </div>
               </div>
 
-              <div class="text-xs font-semibold text-slate-400">
-                <span x-text="(obj.matches ? obj.matches.length : 0) + ' Visual Matches Found'"></span>
+              <!-- Live Store Count Badge -->
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20"
+                      x-text="(item.matches ? item.matches.length : 0) + ' Top Live Store Matches'"></span>
               </div>
             </div>
 
-            <!-- Matches Cards Grid for This Object -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              <template x-for="match in obj.matches" :key="match.item.id">
-                <div class="group rounded-2xl bg-slate-900/90 border border-slate-800/90 hover:border-indigo-500/50 hover:shadow-xl hover:shadow-indigo-500/10 transition-all duration-300 flex flex-col overflow-hidden">
+            <!-- Matches Grid for This Item -->
+            <div class="p-6">
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                <template x-for="(match, mIdx) in item.matches" :key="mIdx">
+                  <div class="group rounded-xl bg-slate-950/70 border border-slate-800/90 hover:border-indigo-500/50 hover:shadow-xl hover:shadow-indigo-500/10 transition-all duration-300 flex flex-col overflow-hidden">
+                    
+                    <!-- Card Image Area -->
+                    <div class="relative h-48 w-full bg-slate-950 overflow-hidden flex items-center justify-center">
+                      <img :src="match.thumbnail" :alt="match.title"
+                           loading="lazy"
+                           class="w-full h-full object-cover group-hover:scale-105 transition duration-500"
+                           onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=400&q=80'">
 
-                  <!-- Card Image Area -->
-                  <div class="relative h-56 w-full bg-slate-950 overflow-hidden">
-                    <img :src="match.item.image_url" :alt="match.item.name"
-                         loading="lazy"
-                         class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
-
-                    <!-- Match Score Badge -->
-                    <div class="absolute top-3 right-3 px-2.5 py-1 rounded-full text-xs font-bold shadow-lg backdrop-blur-md"
-                         :class="getMatchBadgeClass(match.score)">
-                      <span x-text="formatMatchScore(match.score)"></span>
-                    </div>
-
-                    <!-- Category Tag -->
-                    <div class="absolute top-3 left-3 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-950/80 border border-slate-700/60 text-slate-200 backdrop-blur-md">
-                      <span x-text="match.item.category"></span>
-                    </div>
-
-                    <!-- Rank Badge -->
-                    <div class="absolute bottom-2 left-2 text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-950/75 text-slate-400">
-                      #<span x-text="match.rank"></span>
-                    </div>
-                  </div>
-
-                  <!-- Card Details Area -->
-                  <div class="p-5 flex-1 flex flex-col justify-between space-y-4">
-                    <div class="space-y-2">
-                      <div class="flex items-start justify-between gap-2">
-                        <h4 class="font-bold text-slate-100 text-base group-hover:text-indigo-400 transition line-clamp-1" x-text="match.item.name"></h4>
-                        <span class="text-base font-extrabold text-emerald-400 shrink-0" x-text="'$' + match.item.price.toFixed(2)"></span>
-                      </div>
-                      <p class="text-xs text-slate-400 line-clamp-2 leading-relaxed" x-text="match.item.description"></p>
-                    </div>
-
-                    <!-- Tags / Chips -->
-                    <div class="space-y-3 pt-3 border-t border-slate-800/80">
-                      <div class="flex flex-wrap gap-1.5">
-                        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-800/80 text-slate-300 font-medium" x-text="match.item.material"></span>
-                        <span class="text-[11px] px-2 py-0.5 rounded bg-slate-800/80 text-slate-400 font-medium" x-text="match.item.color"></span>
-                      </div>
-                      <div class="flex items-center justify-between text-[11px] text-slate-500">
-                        <span x-text="match.item.dimensions"></span>
-                        <span class="text-emerald-400 font-medium">&bull; In Stock</span>
+                      <!-- Store Source Badge -->
+                      <div x-show="match.source" class="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-950/85 border border-slate-700/70 text-slate-200 backdrop-blur-md truncate max-w-[130px]">
+                        <span x-text="match.source"></span>
                       </div>
 
-                      <!-- Direct Buy Action Buttons -->
-                      <div class="pt-2 flex items-center gap-2">
-                        <a :href="match.item.buy_url || match.item.image_url" target="_blank" rel="noopener noreferrer"
-                           class="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition active:scale-[0.98]">
+                      <!-- Rank Badge -->
+                      <div class="absolute bottom-2 left-2 text-[10px] font-bold px-2 py-0.5 rounded bg-slate-950/80 text-indigo-400 border border-slate-800">
+                        Top Choice #<span x-text="mIdx + 1"></span>
+                      </div>
+                    </div>
+
+                    <!-- Card Details Area -->
+                    <div class="p-4 flex-1 flex flex-col justify-between space-y-3">
+                      <div class="space-y-2">
+                        <h4 class="font-semibold text-slate-100 text-sm group-hover:text-indigo-400 transition line-clamp-2 leading-snug"
+                            :title="match.title" x-text="match.title"></h4>
+                        <div class="flex items-center justify-between pt-1">
+                          <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 truncate max-w-[110px]" x-text="match.source || 'Store'"></span>
+                          <span class="text-sm font-extrabold text-emerald-400 shrink-0" x-text="match.price"></span>
+                        </div>
+                      </div>
+
+                      <!-- Direct Buy Action Button -->
+                      <div class="pt-2.5 border-t border-slate-800/80 flex items-center gap-2">
+                        <a :href="match.link" target="_blank" rel="noopener noreferrer"
+                           class="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition active:scale-[0.98]">
                           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
                           </svg>
                           <span>Buy Product</span>
                         </a>
-                        <a :href="match.item.image_url" target="_blank" rel="noopener noreferrer" title="View Full Image"
-                           class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition">
+                        <a :href="match.link" target="_blank" rel="noopener noreferrer" title="View Source Page"
+                           class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition">
                           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
                           </svg>
@@ -443,8 +414,72 @@
                     </div>
 
                   </div>
+                </template>
+              </div>
+            </div>
+
+          </div>
+        </template>
+      </div>
+
+      <!-- FALLBACK FLAT LIVE WEB RESULTS GRID (If single object / legacy results) -->
+      <div x-show="!isSearching && items.length === 0 && results.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        <template x-for="(item, idx) in results" :key="idx">
+          <div class="group rounded-2xl bg-slate-900/90 border border-slate-800/90 hover:border-indigo-500/50 hover:shadow-xl hover:shadow-indigo-500/10 transition-all duration-300 flex flex-col overflow-hidden">
+
+            <!-- Card Image Area -->
+            <div class="relative h-56 w-full bg-slate-950 overflow-hidden flex items-center justify-center">
+              <img :src="item.thumbnail" :alt="item.title"
+                   loading="lazy"
+                   class="w-full h-full object-cover group-hover:scale-105 transition duration-500"
+                   onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=400&q=80'">
+
+              <!-- Neural Visual Match Badge -->
+              <div class="absolute top-3 right-3 px-2.5 py-1 rounded-full text-[11px] font-bold shadow-lg backdrop-blur-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1.5">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>Neural Visual Match</span>
+              </div>
+
+              <!-- Store Source Badge -->
+              <div x-show="item.source" class="absolute top-3 left-3 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-950/80 border border-slate-700/60 text-slate-200 backdrop-blur-md truncate max-w-[140px]">
+                <span x-text="item.source"></span>
+              </div>
+
+              <!-- Rank Badge -->
+              <div class="absolute bottom-2 left-2 text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-950/75 text-slate-400">
+                #<span x-text="idx + 1"></span>
+              </div>
+            </div>
+
+            <!-- Card Details Area -->
+            <div class="p-5 flex-1 flex flex-col justify-between space-y-4">
+              <div class="space-y-2.5">
+                <div class="flex items-start justify-between gap-2">
+                  <h4 class="font-bold text-slate-100 text-sm group-hover:text-indigo-400 transition line-clamp-2 leading-snug" :title="item.title" x-text="item.title"></h4>
                 </div>
-              </template>
+                <div class="flex items-center justify-between pt-1">
+                  <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 truncate max-w-[120px]" x-text="item.source || 'Store'"></span>
+                  <span class="text-sm font-extrabold text-emerald-400 shrink-0" x-text="item.price"></span>
+                </div>
+              </div>
+
+              <!-- Direct Buy Action Button -->
+              <div class="pt-3 border-t border-slate-800/80 flex items-center gap-2">
+                <a :href="item.link" target="_blank" rel="noopener noreferrer"
+                   class="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold text-xs shadow-md shadow-indigo-600/20 transition active:scale-[0.98]">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
+                  </svg>
+                  <span>Buy Product</span>
+                </a>
+                <a :href="item.link" target="_blank" rel="noopener noreferrer" title="View Source Page"
+                   class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                  </svg>
+                </a>
+              </div>
+
             </div>
 
           </div>
@@ -461,7 +496,7 @@
       <div class="flex items-center space-x-2">
         <span>VisionSpace AI &copy; 2026</span>
         <span>&bull;</span>
-        <span>YOLOv8 Multi-Object Lens + Qdrant Cloud</span>
+        <span>VisionSpace AI Neural Engine</span>
       </div>
       <div class="flex items-center space-x-4">
         <span x-show="stats" class="text-slate-400">
@@ -500,16 +535,19 @@
   <script>
     // =========================================================================
     // CONFIGURABLE API BASE URL
-    // Default is configured for local testing against FastAPI backend
+    // Fallback: localhost when testing locally, Render when deployed on GitHub Pages
     // =========================================================================
-    const API_BASE_URL = 'http://127.0.0.1:8000';
+    window.API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+      ? 'http://127.0.0.1:8000'
+      : 'https://YOUR_RENDER_SERVICE_NAME.onrender.com';
+    const API_BASE_URL = window.API_BASE_URL;
 
     function visualSearchApp() {
       return {
         // Backend Config
         apiBaseUrl: (localStorage.getItem('visionspace_api_url') && localStorage.getItem('visionspace_api_url') !== 'http://localhost:8000')
           ? localStorage.getItem('visionspace_api_url')
-          : API_BASE_URL,
+          : window.API_BASE_URL,
         customApiBaseUrl: '',
         showSettingsModal: false,
 
@@ -531,9 +569,12 @@
         errorMessage: '',
 
         // Multi-Object Results & State
+        totalItems: 0,
         totalObjectsDetected: 0,
+        items: [],
         detectedObjects: [],
         activeObjectFilter: 'all',
+        results: [],
         stats: null,
 
         // Curated Samples for Instant Testing
@@ -619,8 +660,11 @@
           this.fileName = file.name;
           this.fileSizeFormatted = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
           this.previewUrl = URL.createObjectURL(file);
+          this.items = [];
+          this.totalItems = 0;
           this.detectedObjects = [];
           this.totalObjectsDetected = 0;
+          this.results = [];
           this.activeObjectFilter = 'all';
         },
 
@@ -643,8 +687,11 @@
           this.selectedFile = null;
           this.fileName = '';
           this.fileSizeFormatted = '';
+          this.items = [];
+          this.totalItems = 0;
           this.detectedObjects = [];
           this.totalObjectsDetected = 0;
+          this.results = [];
           this.hasSearched = false;
           if (this.previewUrl) {
             URL.revokeObjectURL(this.previewUrl);
@@ -679,25 +726,14 @@
             }
 
             const data = await res.json();
-            this.totalObjectsDetected = data.total_objects_detected || (data.detected_objects ? data.detected_objects.length : 0);
+            this.items = data.items || [];
+            this.totalItems = data.total_items || this.items.length;
+            this.totalObjectsDetected = data.total_objects_detected || this.totalItems;
+            this.results = data.results || [];
             this.detectedObjects = data.detected_objects || [];
 
-            // Fallback for legacy response structure
-            if (this.detectedObjects.length === 0 && data.results && data.results.length > 0) {
-              this.detectedObjects = [{
-                object_id: 1,
-                label: 'full image',
-                confidence: 1.0,
-                bbox: [0, 0, 100, 100],
-                matches: data.results,
-              }];
-              this.totalObjectsDetected = 1;
-            }
-
-            this.activeObjectFilter = 'all';
             this.stats = {
               execution_time_ms: data.execution_time_ms,
-              features_summary: data.features_summary,
             };
             this.hasSearched = true;
           } catch (err) {
@@ -728,8 +764,8 @@
         },
 
         resetApiUrl() {
-          this.customApiBaseUrl = API_BASE_URL;
-          this.apiBaseUrl = API_BASE_URL;
+          this.customApiBaseUrl = window.API_BASE_URL;
+          this.apiBaseUrl = window.API_BASE_URL;
           localStorage.removeItem('visionspace_api_url');
           this.showSettingsModal = false;
           this.pingEngine();

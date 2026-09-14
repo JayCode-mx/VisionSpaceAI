@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import io
 import time
 import uuid
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,9 +21,14 @@ from app.models import (
     FurnitureMetadata,
     FurnitureSearchResult,
     FurnitureSearchResponse,
+    FurnitureDiscoveredItem,
     HealthResponse,
+    LensSearchResponse,
+    LensVisualMatch,
 )
+from app.lens_service import lens_service
 from app.object_detector import ObjectDetector
+from app.image_preprocessor import extract_all_furniture_crops
 from app.vector_service import VectorService
 from app.vision_pipeline import VisionPipeline
 
@@ -49,8 +54,8 @@ async def lifespan(app: FastAPI):
         clip_processor=vision_pipeline.clip_processor,
     )
 
-    # 3. Initialize YOLOv8 Object Detector
-    object_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.25)
+    # 3. Initialize YOLOv8 Object Detector with lower threshold for low-profile furniture
+    object_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.20, iou_threshold=0.45)
 
     # 4. Seed Catalog if collection is empty
     vector_store.seed_catalog_if_empty(vision_pipeline)
@@ -70,11 +75,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Parse allowed origins for CORS middleware
-raw_origins = settings.ALLOWED_ORIGINS
+# Parse allowed origins for CORS middleware (from CORS_ORIGINS or ALLOWED_ORIGINS)
+raw_origins = getattr(settings, "CORS_ORIGINS", None) or getattr(settings, "ALLOWED_ORIGINS", "*")
 if isinstance(raw_origins, str):
     parsed_origins = [orig.strip() for orig in raw_origins.split(",") if orig.strip()]
     origins = parsed_origins if parsed_origins else ["*"]
+elif isinstance(raw_origins, (list, tuple)):
+    origins = list(raw_origins)
 else:
     origins = ["*"]
 
@@ -89,14 +96,15 @@ app.add_middleware(
 
 @app.get("/", tags=["General"])
 async def root():
-    """Root landing endpoint."""
+    """Lightweight health check endpoint for Render health checks and general discovery."""
     return {
+        "status": "online",
+        "engine": "VisionSpace AI Neural Engine",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "docs_url": "/docs",
         "search_endpoint": f"{settings.API_PREFIX}/search-furniture",
         "health_endpoint": f"{settings.API_PREFIX}/health",
-        "status": "online",
     }
 
 
@@ -159,12 +167,6 @@ async def search_furniture(
     """
     start_time = time.perf_counter()
 
-    if vision_pipeline is None or vector_store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Vision models or Vector Database are not initialized.",
-        )
-
     # 1. Validate file format
     if not file.content_type or not file.content_type.startswith("image/"):
         valid_extensions = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
@@ -185,106 +187,107 @@ async def search_furniture(
             detail=f"Failed to read/decode uploaded image: {str(exc)}",
         )
 
-    # 2. Multi-Object Detection using YOLOv8
-    detected_raw: List[dict] = []
-    if object_detector is not None:
-        try:
-            detected_raw = object_detector.detect(pil_img)
-        except Exception as exc:
-            print(f"Warning: Object detector failed ({exc}), falling back to full image.")
-            detected_raw = []
+    # 2. Hybrid Region Extraction (YOLOv8 + Heuristic Region Sampling)
+    crops = extract_all_furniture_crops(pil_img, detector=object_detector, max_crops=4)
 
-    detected_objects: List[DetectedObject] = []
-    primary_clip_emb = None
-    mobilenet_feat = None
+    # 3. Unified Visual Search across all crops
+    top_matches = top_k if top_k else 3
+    discovered_items_raw = lens_service.search_multi_crops(crops, top_matches_per_crop=top_matches)
 
-    # 3. Process Detections or Fallback to Full Image
-    if detected_raw and len(detected_raw) > 0:
-        print(f"Detected {len(detected_raw)} furniture/interior objects in image.")
-        for det in detected_raw:
-            crop_img = det["cropped_image"]
-            # Preprocess cropped item and extract CLIP visual embedding
-            _, crop_clip_emb, _ = vision_pipeline.process_and_extract(
-                image_input=crop_img,
-                extract_mobilenet=False,
-            )
+    # Filter by category if requested
+    if category and category.strip():
+        cat_lower = category.strip().lower()
+        filtered = [it for it in discovered_items_raw if cat_lower in it.get("category", "").lower()]
+        if filtered:
+            discovered_items_raw = filtered
 
-            if primary_clip_emb is None:
-                primary_clip_emb = crop_clip_emb
+    # 4. Consolidate into structured response
+    items: List[FurnitureDiscoveredItem] = []
+    flattened_results: List[Dict[str, Any]] = []
+    detected_objects_summary: List[Dict[str, Any]] = []
 
-            # Determine category filter: user explicit category takes precedence, else hint from YOLO
-            eff_category = category if category else det.get("category_hint")
-
-            matches = vector_store.search_similar(
-                query_vector=crop_clip_emb,
-                top_k=top_k,
-                category=eff_category,
-                min_score=min_score,
-            )
-
-            # Ensure buy_url is populated with product buy links / image_url fallback
-            for match in matches:
-                if not match.item.buy_url and match.item.image_url:
-                    match.item.buy_url = match.item.image_url
-
-            detected_objects.append(
-                DetectedObject(
-                    object_id=det["object_id"],
-                    label=det["label"],
-                    confidence=det["confidence"],
-                    bbox=det["bbox"],
-                    matches=matches,
-                )
-            )
-    else:
-        # Fallback: Process full image
-        print("No individual objects detected. Operating in full-image fallback mode.")
-        preprocessed_img, clip_emb, mobilenet_feat = vision_pipeline.process_and_extract(
-            image_input=contents,
-            extract_mobilenet=include_mobilenet_features,
+    for it in discovered_items_raw:
+        item_obj = FurnitureDiscoveredItem(
+            item_id=it["item_id"],
+            detected_name=it["detected_name"],
+            category=it["category"],
+            bbox=it.get("bbox"),
+            confidence=it.get("confidence"),
+            matches=it.get("matches", []),
         )
-        primary_clip_emb = clip_emb
-        query_vector = clip_emb
-        print("Query Vector (First 5 values):", query_vector[:5])
-
-        matches = vector_store.search_similar(
-            query_vector=clip_emb,
-            top_k=top_k,
-            category=category,
-            min_score=min_score,
-        )
-
-        for match in matches:
-            if not match.item.buy_url and match.item.image_url:
-                match.item.buy_url = match.item.image_url
-
-        w, h = pil_img.size
-        detected_objects.append(
-            DetectedObject(
-                object_id=1,
-                label="full image",
-                confidence=1.0,
-                bbox=[0, 0, w, h],
-                matches=matches,
-            )
-        )
+        items.append(item_obj)
+        flattened_results.extend(it.get("matches", []))
+        if it.get("bbox"):
+            detected_objects_summary.append({
+                "object_id": it["item_id"],
+                "label": it["detected_name"],
+                "category": it["category"],
+                "confidence": it.get("confidence", 0.85),
+                "bbox": it.get("bbox"),
+            })
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
-    # Aggregate primary matches for backwards compatibility
-    primary_matches = detected_objects[0].matches if detected_objects else []
-
     return FurnitureSearchResponse(
-        query_id=str(uuid.uuid4()),
-        total_objects_detected=len(detected_objects),
-        detected_objects=detected_objects,
-        total_matches=len(primary_matches),
-        results=primary_matches,
+        status="success",
+        engine="VisionSpace Spatial Match v2.0",
+        total_items=len(items),
+        total_objects_detected=len(items),
         execution_time_ms=round(elapsed_ms, 2),
-        features_summary=ExtractedFeaturesSummary(
-            clip_embedding_dim=len(primary_clip_emb) if primary_clip_emb is not None else 512,
-            mobilenet_feature_dim=len(mobilenet_feat) if mobilenet_feat is not None else None,
-            preprocessor_target_size=settings.TARGET_IMAGE_SIZE,
-            clahe_applied=True,
-        ),
+        items=items,
+        detected_objects=detected_objects_summary,
+        results=flattened_results,
     )
+
+
+@app.post(
+    f"{settings.API_PREFIX}/search-lens",
+    response_model=LensSearchResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Visual Search"],
+    summary="Search real visual matches using spatial discovery engine",
+)
+async def search_lens(
+    file: UploadFile = File(..., description="Query image file to search for visual matches"),
+):
+    """High-precision visual search endpoint.
+
+    Executes live visual discovery across verified merchant catalogs.
+    Raises explicit HTTP 400 if search credentials are unconfigured or invalid.
+    """
+    start_time = time.perf_counter()
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        valid_extensions = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+        if not file.filename or not file.filename.lower().endswith(valid_extensions):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid file type: {file.content_type}. Expected an image file.",
+            )
+
+    try:
+        contents = await file.read()
+        if not contents:
+            raise ValueError("Uploaded image file is empty.")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to read/decode uploaded image: {str(exc)}",
+        )
+
+    # Execute live visual search
+    visual_matches = lens_service.search_lens(
+        image_input=contents,
+        filename=file.filename or "query.jpg",
+        content_type=file.content_type or "image/jpeg",
+    )
+
+    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+
+    return LensSearchResponse(
+        engine="VisionSpace Spatial Match v2.0",
+        total_matches=len(visual_matches),
+        visual_matches=visual_matches,
+        execution_time_ms=round(elapsed_ms, 2),
+    )
+
