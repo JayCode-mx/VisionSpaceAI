@@ -14,6 +14,50 @@ except ImportError:
     from image_preprocessor import ImagePreprocessor
 
 
+# COCO Class IDs: 56: chair, 57: couch/sofa, 58: potted plant, 60: dining table
+TARGET_CLASSES = {56: "Chair", 57: "Sofa", 58: "Plant", 60: "Table"}
+
+CONF_THRESHOLD = 0.18  # Threshold lower karein taaki table detect ho sake
+
+
+def filter_detections(boxes, scores, class_ids):
+    detected_objects = []
+    for box, score, class_id in zip(boxes, scores, class_ids):
+        cid = int(class_id)
+        sc = float(score)
+        if sc >= CONF_THRESHOLD and cid in TARGET_CLASSES:
+            label = TARGET_CLASSES[cid]
+            detected_objects.append({
+                "box": box,
+                "label": label,
+                "confidence": sc,
+            })
+    return detected_objects
+
+
+def crop_with_padding(image, box, padding_percent=0.10):
+    if isinstance(image, np.ndarray):
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = box
+        pad_w = (x2 - x1) * padding_percent
+        pad_h = (y2 - y1) * padding_percent
+        x1_pad = max(0, int(x1 - pad_w))
+        y1_pad = max(0, int(y1 - pad_h))
+        x2_pad = min(w, int(x2 + pad_w))
+        y2_pad = min(h, int(y2 + pad_h))
+        return image[y1_pad:y2_pad, x1_pad:x2_pad]
+    else:
+        w, h = image.size
+        x1, y1, x2, y2 = box
+        pad_w = (x2 - x1) * padding_percent
+        pad_h = (y2 - y1) * padding_percent
+        x1_pad = max(0, int(x1 - pad_w))
+        y1_pad = max(0, int(y1 - pad_h))
+        x2_pad = min(w, int(x2 + pad_w))
+        y2_pad = min(h, int(y2 + pad_h))
+        return image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
+
+
 class VisionPipeline:
     """Lightweight Vision Pipeline using ONNX Runtime.
 

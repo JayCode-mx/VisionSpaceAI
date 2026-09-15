@@ -195,6 +195,70 @@ class TestLensService(unittest.TestCase):
         self.assertEqual(results[1]["item_id"], 2)
         self.assertEqual(len(results[1]["matches"]), 3)
 
+    def test_discard_low_confidence_and_social_media(self):
+        """Verify items with confidence < 0.55 are discarded, and Instagram/Reddit results are filtered out."""
+        service = LensService(api_key="dummy_key")
+
+        crop_valid = Image.new("RGB", (100, 100), color=(50, 120, 180))
+        crop_low_conf = Image.new("RGB", (100, 100), color=(180, 120, 50))
+
+        crops = [
+            {
+                "item_id": 1,
+                "label": "chair",
+                "category": "Chair",
+                "confidence": 0.85,  # Above 0.55 -> should keep
+                "bbox": [10, 10, 100, 100],
+                "cropped_image": crop_valid,
+            },
+            {
+                "item_id": 2,
+                "label": "table",
+                "category": "Table",
+                "confidence": 0.33,  # Below 0.55 cutoff -> must discard!
+                "bbox": [50, 50, 150, 150],
+                "cropped_image": crop_low_conf,
+            },
+        ]
+
+        def fake_get_visual_matches(crop_bytes):
+            return [
+                {
+                    "title": "Instagram user living room photo",
+                    "source": "Instagram",
+                    "link": "https://www.instagram.com/p/12345",
+                    "thumbnail": "https://instagram.com/th.jpg",
+                },
+                {
+                    "title": "Reddit post about room decor",
+                    "source": "Reddit",
+                    "link": "https://www.reddit.com/r/CozyPlaces",
+                    "thumbnail": "https://reddit.com/th.jpg",
+                },
+                {
+                    "title": "Modern Ergonomic Office Chair",
+                    "source": "Herman Miller",
+                    "price": "$895.00",
+                    "link": "https://www.hermanmiller.com/chair",
+                    "thumbnail": "https://hm.com/chair.jpg",
+                },
+            ]
+
+        with patch.object(service, "get_visual_matches", side_effect=fake_get_visual_matches):
+            results = service.search_multi_crops(crops, top_matches_per_crop=3, min_confidence=0.55)
+
+        # Item 2 (confidence 0.33) should be discarded
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["item_id"], 1)
+        self.assertEqual(results[0]["category"], "Chair")
+
+        # Instagram and Reddit matches should be filtered out, leaving only Herman Miller
+        matches = results[0]["matches"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["source"], "Herman Miller")
+        self.assertNotIn("Instagram", [m["source"] for m in matches])
+        self.assertNotIn("Reddit", [m["source"] for m in matches])
+
 
 if __name__ == "__main__":
     unittest.main()

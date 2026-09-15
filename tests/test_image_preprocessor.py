@@ -267,6 +267,52 @@ class TestObjectDetection(unittest.TestCase):
         self.assertEqual(crops[0]["label"], "dining table")
         self.assertFalse(crops[0]["is_heuristic"])
 
+    def test_target_classes_and_filter_detections(self):
+        from image_preprocessor import TARGET_CLASSES, CONF_THRESHOLD, filter_detections
+        self.assertEqual(CONF_THRESHOLD, 0.18)
+        self.assertIn(60, TARGET_CLASSES)
+        self.assertEqual(TARGET_CLASSES[60], "Table")
+        self.assertIn(56, TARGET_CLASSES)
+        self.assertEqual(TARGET_CLASSES[56], "Chair")
+        self.assertIn(57, TARGET_CLASSES)
+        self.assertEqual(TARGET_CLASSES[57], "Sofa")
+        self.assertIn(58, TARGET_CLASSES)
+        self.assertEqual(TARGET_CLASSES[58], "Plant")
+
+        # Test filter_detections
+        boxes = [[10, 10, 50, 50], [20, 20, 80, 80], [30, 30, 90, 90], [5, 5, 25, 25]]
+        scores = [0.19, 0.12, 0.85, 0.95]
+        class_ids = [60, 60, 56, 0]  # class 0 is person (not in TARGET_CLASSES)
+
+        filtered = filter_detections(boxes, scores, class_ids, conf_threshold=0.18)
+        # Should keep box 0 (table, 0.19 >= 0.18) and box 2 (chair, 0.85 >= 0.18)
+        # Should discard box 1 (table, 0.12 < 0.18) and box 3 (person, not in TARGET_CLASSES)
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(filtered[0]["label"], "Table")
+        self.assertEqual(filtered[0]["confidence"], 0.19)
+        self.assertEqual(filtered[1]["label"], "Chair")
+        self.assertEqual(filtered[1]["confidence"], 0.85)
+
+    def test_crop_with_padding_pil_and_numpy(self):
+        from image_preprocessor import crop_with_padding
+
+        # PIL Image test: 200x200 image, box [40, 40, 80, 80] (w=40, h=40)
+        # 10% pad = 4px -> [36, 36, 84, 84] (w=48, h=48)
+        img = Image.new("RGB", (200, 200), color=(100, 100, 100))
+        box = [40, 40, 80, 80]
+        cropped_pil = crop_with_padding(img, box, padding_percent=0.10)
+        self.assertEqual(cropped_pil.size, (48, 48))
+
+        # Boundary clamping test: box near top-left [2, 2, 20, 20]
+        box_edge = [2, 2, 20, 20]
+        cropped_edge = crop_with_padding(img, box_edge, padding_percent=0.20)
+        self.assertGreater(cropped_edge.size[0], 18)
+
+        # NumPy test: 200x200x3 array
+        arr = np.zeros((200, 200, 3), dtype=np.uint8)
+        cropped_np = crop_with_padding(arr, box, padding_percent=0.10)
+        self.assertEqual(cropped_np.shape, (48, 48, 3))
+
 
 if __name__ == "__main__":
     unittest.main()

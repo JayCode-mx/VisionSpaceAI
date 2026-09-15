@@ -77,6 +77,10 @@ def _clean_source_name(raw_source: Optional[str]) -> str:
     return cleaned.strip() or s
 
 
+MIN_MATCH_CONFIDENCE = 0.55  # 55% score cutoff
+DISALLOWED_SOURCES = {"instagram", "reddit", "pinterest", "tiktok", "twitter", "facebook"}
+
+
 class LensService:
     """Service to execute real Google Lens visual searches via SerpAPI.
 
@@ -561,15 +565,18 @@ class LensService:
         self,
         crops: List[Union[Image.Image, Dict[str, Any]]],
         top_matches_per_crop: int = 3,
+        min_confidence: float = MIN_MATCH_CONFIDENCE,
     ) -> List[Dict[str, Any]]:
         """Unified visual search across multiple cropped image regions.
 
         Iterates over each crop, queries Google Lens for live web visual matches,
         extracts the top 3 store listings, and derives a smart descriptive label.
+        Discards low-confidence items below min_confidence (default 55%) and social media links.
 
         Args:
             crops: List of PIL Images or crop metadata dictionaries from extract_all_furniture_crops.
             top_matches_per_crop: Number of top store matches to keep per crop (default: 3).
+            min_confidence: Minimum detection confidence threshold (default: 0.55).
 
         Returns:
             List of structured items ready for the API response:
@@ -605,6 +612,10 @@ class LensService:
             if crop_img is None:
                 continue
 
+            # Quality filter: Discard items with confidence below 55% threshold
+            if confidence is not None and confidence < min_confidence:
+                continue
+
             # Convert crop PIL Image to JPEG bytes
             buf = io.BytesIO()
             crop_img.convert("RGB").save(buf, format="JPEG", quality=95)
@@ -613,7 +624,15 @@ class LensService:
             # Live visual search
             try:
                 raw_matches = self.get_visual_matches(crop_bytes)
-                matches = raw_matches[:top_matches_per_crop]
+                # Filter out irrelevant social media platforms (Instagram, Reddit, Pinterest)
+                cleaned_matches = [
+                    m for m in raw_matches
+                    if not any(
+                        dis in (m.get("source") or "").lower() or dis in (m.get("link") or "").lower()
+                        for dis in DISALLOWED_SOURCES
+                    )
+                ]
+                matches = cleaned_matches[:top_matches_per_crop]
             except Exception as exc:
                 print(f"Warning: Visual search failed for crop #{idx} ({exc})")
                 matches = []
@@ -636,7 +655,7 @@ class LensService:
                     item_cat = "Decor"
 
             items.append({
-                "item_id": idx,
+                "item_id": len(items) + 1,
                 "detected_name": smart_name,
                 "category": item_cat,
                 "bbox": bbox,

@@ -343,6 +343,34 @@ def crop_bounding_box(
     return image.crop((x1, y1, x2, y2))
 
 
+def crop_with_padding(
+    image: Union[Image.Image, np.ndarray],
+    box: Union[List[int], Tuple[int, int, int, int]],
+    padding_percent: float = 0.10,
+) -> Union[Image.Image, np.ndarray]:
+    """Crop bounding box [x1, y1, x2, y2] with 10-15% contextual padding."""
+    if isinstance(image, np.ndarray):
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = box
+        pad_w = (x2 - x1) * padding_percent
+        pad_h = (y2 - y1) * padding_percent
+        x1_pad = max(0, int(x1 - pad_w))
+        y1_pad = max(0, int(y1 - pad_h))
+        x2_pad = min(w, int(x2 + pad_w))
+        y2_pad = min(h, int(y2 + pad_h))
+        return image[y1_pad:y2_pad, x1_pad:x2_pad]
+    else:
+        w, h = image.size
+        x1, y1, x2, y2 = box
+        pad_w = (x2 - x1) * padding_percent
+        pad_h = (y2 - y1) * padding_percent
+        x1_pad = max(0, int(x1 - pad_w))
+        y1_pad = max(0, int(y1 - pad_h))
+        x2_pad = min(w, int(x2 + pad_w))
+        y2_pad = min(h, int(y2 + pad_h))
+        return image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
+
+
 # Re-export YOLOv8 ObjectDetector and interior classes for convenience
 try:
     from app.object_detector import (
@@ -351,6 +379,9 @@ try:
         LABEL_TO_CATEGORY,
         INTERIOR_COCO_IDS,
         compute_bbox_iou,
+        TARGET_CLASSES,
+        CONF_THRESHOLD,
+        filter_detections,
     )
 except ImportError:
     try:
@@ -360,6 +391,9 @@ except ImportError:
             LABEL_TO_CATEGORY,
             INTERIOR_COCO_IDS,
             compute_bbox_iou,
+            TARGET_CLASSES,
+            CONF_THRESHOLD,
+            filter_detections,
         )
     except ImportError:
         ObjectDetector = None
@@ -367,6 +401,9 @@ except ImportError:
         LABEL_TO_CATEGORY = {}
         INTERIOR_COCO_IDS = {}
         compute_bbox_iou = None
+        TARGET_CLASSES = {56: "Chair", 57: "Sofa", 58: "Plant", 60: "Table"}
+        CONF_THRESHOLD = 0.18
+        filter_detections = None
 
 
 _default_detector = None
@@ -377,7 +414,7 @@ def get_default_detector():
     global _default_detector
     if _default_detector is None and ObjectDetector is not None:
         try:
-            _default_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.20, iou_threshold=0.45)
+            _default_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.18, iou_threshold=0.45)
         except Exception:
             _default_detector = None
     return _default_detector

@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
     )
 
     # 3. Initialize YOLOv8 Object Detector with lower threshold for low-profile furniture
-    object_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.20, iou_threshold=0.45)
+    object_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.18, iou_threshold=0.45)
 
     # 4. Seed Catalog if collection is empty
     vector_store.seed_catalog_if_empty(vision_pipeline)
@@ -200,6 +200,21 @@ async def search_furniture(
         filtered = [it for it in discovered_items_raw if cat_lower in it.get("category", "").lower()]
         if filtered:
             discovered_items_raw = filtered
+
+    # Fix 3: Quality filter - minimum 55% match confidence cutoff
+    # Backend API response send karne se pehle 55% se kam confidence wale items discard karein
+    MIN_MATCH_CONFIDENCE = 0.55  # 55% score cutoff
+    eff_min_conf = max(MIN_MATCH_CONFIDENCE, min_score) if min_score is not None else MIN_MATCH_CONFIDENCE
+
+    raw_results = discovered_items_raw
+    filtered_results = [
+        item for item in raw_results
+        if item.get("confidence") is None or item.get("confidence", 0) >= eff_min_conf
+    ]
+    # Re-index items sequentially
+    for idx, item in enumerate(filtered_results, start=1):
+        item["item_id"] = idx
+    discovered_items_raw = filtered_results
 
     # 4. Consolidate into structured response
     items: List[FurnitureDiscoveredItem] = []
