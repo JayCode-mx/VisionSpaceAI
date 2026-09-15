@@ -88,4 +88,3 @@ class LensSearchResponse(BaseModel):
     total_matches: int
     visual_matches: List[LensVisualMatch]
     execution_time_ms: float
-
