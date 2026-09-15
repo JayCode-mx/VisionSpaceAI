@@ -1,17 +1,13 @@
 """Vision Pipeline combining Pillow/OpenCV Preprocessor, PyTorch CLIP, and Keras MobileNetV2."""
 
 import os
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Any, Dict
 from PIL import Image
 import numpy as np
+import torch
 
 # Configure Keras backend to PyTorch
 os.environ["KERAS_BACKEND"] = "torch"
-
-import torch
-from transformers import CLIPModel, CLIPProcessor
-import keras
-from keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input as mobilenet_preprocess
 
 from app.config import settings
 try:
@@ -27,6 +23,9 @@ class VisionPipeline:
     1. Pillow/OpenCV ImagePreprocessor (CLAHE + 224x224 aspect-preserving letterboxing)
     2. PyTorch Hugging Face Transformers CLIP model (Visual embeddings for vector search)
     3. Keras MobileNetV2 (1280-d deep visual feature representations)
+    4. Ultralytics YOLOv8 nano model (Object detection)
+
+    All deep learning models are lazy-loaded on demand to optimize startup memory limit.
     """
 
     def __init__(self, device: Optional[str] = None):
@@ -43,22 +42,73 @@ class VisionPipeline:
             pad_color=(0, 0, 0),
         )
 
-        # 2. Initialize PyTorch CLIP model
-        print(f"Loading CLIP model ({settings.CLIP_MODEL_NAME}) on {self.device}...")
-        self.clip_model = CLIPModel.from_pretrained(settings.CLIP_MODEL_NAME).to(self.device)
-        self.clip_processor = CLIPProcessor.from_pretrained(settings.CLIP_MODEL_NAME)
-        self.clip_model.eval()
+        # Lazy-loaded model references
+        self._model = None
+        self._mobilenet_model = None
+        self._clip_model = None
+        self._clip_processor = None
+        self._yolo = None
 
-        # 3. Initialize Keras MobileNetV2
-        print("Loading Keras MobileNetV2 (weights='imagenet', pooling='avg')...")
-        self.mobilenet_model = MobileNetV2(
-            weights="imagenet",
-            include_top=False,
-            pooling="avg",
-            input_shape=(224, 224, 3),
-        )
+    @property
+    def model(self):
+        """Lazy load Keras MobileNetV2 model when needed."""
+        if self._model is None:
+            print("Lazy loading Keras MobileNetV2 (weights='imagenet', pooling='avg')...")
+            import keras
+            from keras.applications.mobilenet_v2 import MobileNetV2
+            self._model = MobileNetV2(
+                weights="imagenet",
+                include_top=False,
+                pooling="avg",
+                input_shape=(224, 224, 3),
+            )
+            self._mobilenet_model = self._model
+        return self._model
 
-        print("VisionPipeline successfully initialized!")
+    @property
+    def mobilenet_model(self):
+        """Alias for self.model to maintain backward compatibility."""
+        return self.model
+
+    @property
+    def yolo(self):
+        """Lazy load Ultralytics YOLOv8 nano model when needed."""
+        if self._yolo is None:
+            from ultralytics import YOLO
+            print("Lazy loading Ultralytics YOLOv8 nano model (yolov8n.pt)...")
+            self._yolo = YOLO("yolov8n.pt")
+        return self._yolo
+
+    @property
+    def clip_model(self):
+        """Lazy load PyTorch CLIP model when needed."""
+        if self._clip_model is None:
+            from transformers import CLIPModel
+            print(f"Lazy loading CLIP model ({settings.CLIP_MODEL_NAME}) on {self.device}...")
+            self._clip_model = CLIPModel.from_pretrained(settings.CLIP_MODEL_NAME).to(self.device)
+            self._clip_model.eval()
+        return self._clip_model
+
+    @property
+    def clip_processor(self):
+        """Lazy load CLIP processor when needed."""
+        if self._clip_processor is None:
+            from transformers import CLIPProcessor
+            print(f"Lazy loading CLIP processor ({settings.CLIP_MODEL_NAME})...")
+            self._clip_processor = CLIPProcessor.from_pretrained(settings.CLIP_MODEL_NAME)
+        return self._clip_processor
+
+    def predict(self, image: Union[Image.Image, np.ndarray, str, bytes]) -> Dict[str, Any]:
+        """Predict / detect objects and extract features using lazy-loaded models."""
+        pil_image = self.preprocessor.load_image(image)
+        # Access using self.model and self.yolo
+        detections = self.yolo(pil_image)
+        preprocessed_img = self.preprocess_image(pil_image)
+        features = self.extract_mobilenet_features(preprocessed_img)
+        return {
+            "detections": detections,
+            "features": features,
+        }
 
     def preprocess_image(self, image_input: Union[Image.Image, np.ndarray, str, bytes]) -> Image.Image:
         """Preprocesses image through CLAHE enhancement and aspect-ratio padding to 224x224."""
@@ -126,6 +176,8 @@ class VisionPipeline:
         Returns:
             np.ndarray: 1D float32 feature array of length 1280.
         """
+        from keras.applications.mobilenet_v2 import preprocess_input as mobilenet_preprocess
+
         if image.mode != "RGB":
             image = image.convert("RGB")
 
@@ -136,7 +188,7 @@ class VisionPipeline:
         preprocessed = mobilenet_preprocess(img_batch)
 
         with torch.no_grad():
-            features = self.mobilenet_model(preprocessed, training=False)
+            features = self.model(preprocessed, training=False)
             if hasattr(features, "detach"):
                 features_np = features.detach().cpu().numpy().squeeze(0).astype(np.float32)
             else:
