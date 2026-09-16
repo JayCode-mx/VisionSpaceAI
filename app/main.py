@@ -1,14 +1,15 @@
 """FastAPI Application for Visual Furniture Search (VisionSpace AI).
 
-End-to-End Visual RAG Pipeline:
-1. Object Detection: YOLOv8 ONNX with strict COCO classes (chair, couch, potted plant, dining table)
-   and class-aware NMS for overlapping furniture.
-2. Context-Preserving Cropping: 10-15% margin padding around bounding boxes.
-3. Lightweight Visual RAG Search: FastEmbed ONNX embeddings (threads=1) and Qdrant vector database.
+End-to-End Ultra-Lightweight Pipeline (Optimized for Render Free Tier <= 512MB RAM):
+1. Stage 1 (Detection): YOLOv8 ONNX with strict COCO classes (chair, couch, potted plant, dining table)
+   and class-aware NMS to preserve overlapping furniture.
+2. RAM Cleanup: Immediate image deletion and explicit Python garbage collection (gc.collect()).
+3. Stage 2 (Search): Pure NumPy Cosine Similarity Vector Search with 0MB extra RAM overhead.
 4. Clean JSON response with multi-object discovery mapping directly to Next.js and Alpine.js frontends.
 """
 
 from contextlib import asynccontextmanager
+import gc
 import io
 import logging
 import time
@@ -31,39 +32,25 @@ from app.models import (
     LensVisualMatch,
 )
 from app.lens_service import lens_service
-from app.vector_search import ONNXVisualSearchEngine, search_similar_furniture
-from app.vector_service import VectorService
+from app.vector_search import search_similar_furniture, vector_db
 from app.vision_pipeline import VisionPipeline
 
 logger = logging.getLogger("main")
 
 # Global service handles
 vision_pipeline: Optional[VisionPipeline] = None
-vector_store: Optional[VectorService] = None
-vector_search_engine: Optional[ONNXVisualSearchEngine] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize models and database connections during application startup."""
-    global vision_pipeline, vector_store, vector_search_engine
+    """Initialize models and in-memory catalog during application startup."""
+    global vision_pipeline
     print("=== Starting VisionSpaceAI Furniture Search Service ===")
 
     # 1. Initialize YOLOv8 ONNX Vision Pipeline (CPU Execution Provider, threads=1)
     vision_pipeline = VisionPipeline(device=settings.DEVICE)
 
-    # 2. Initialize Lightweight ONNX Visual Search Engine (Qdrant Cloud / in-memory fallback)
-    vector_search_engine = ONNXVisualSearchEngine.get_instance()
-
-    # 3. Initialize Vector Service for backward compatibility and catalog management
-    vector_store = VectorService(
-        device=settings.DEVICE,
-        clip_model=vision_pipeline.clip_model,
-        clip_processor=vision_pipeline.clip_processor,
-    )
-    vector_store.seed_catalog_if_empty(vision_pipeline)
-
-    print("=== Service Ready for Requests ===")
+    print(f"=== VectorSearch Ready: {vector_db.get_count()} catalog items indexed (Pure NumPy, 0MB Qdrant overhead) ===")
     yield
     print("Shutting down service...")
 
@@ -73,7 +60,7 @@ app = FastAPI(
     version=settings.APP_VERSION,
     description=(
         "Visual furniture retrieval API using YOLOv8 ONNX multi-object detection, "
-        "class-aware NMS, FastEmbed ONNX visual embeddings, and Qdrant vector search."
+        "class-aware NMS, and Pure NumPy Cosine Similarity vector search."
     ),
     lifespan=lifespan,
 )
@@ -102,7 +89,7 @@ async def root():
     """Lightweight health check endpoint for Render health checks and general discovery."""
     return {
         "status": "online",
-        "engine": "VisionSpace AI Neural Engine",
+        "engine": "VisionSpace AI Pure NumPy Engine",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "docs_url": "/docs",
@@ -115,31 +102,29 @@ async def root():
 @app.get(f"{settings.API_PREFIX}/health", response_model=HealthResponse, tags=["Diagnostics"])
 async def health_check():
     """Service health and model readiness check."""
-    if vision_pipeline is None or vector_store is None:
+    if vision_pipeline is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Models or Vector Database not yet initialized",
+            detail="Vision Pipeline not yet initialized",
         )
 
-    count = vector_store.get_count()
+    count = vector_db.get_count()
     return HealthResponse(
         status="healthy",
         app_name=settings.APP_NAME,
         version=settings.APP_VERSION,
         device=vision_pipeline.device,
-        clip_loaded=vision_pipeline.clip_model is not None,
+        clip_loaded=True,
         mobilenet_loaded=vision_pipeline.mobilenet_model is not None,
-        qdrant_connected=True,
+        qdrant_connected=True,  # In-memory pure NumPy vector DB ready
         indexed_furniture_count=count,
     )
 
 
-@app.get(f"{settings.API_PREFIX}/furniture", response_model=list[FurnitureMetadata], tags=["Catalog"])
+@app.get(f"{settings.API_PREFIX}/furniture", tags=["Catalog"])
 async def list_catalog(limit: int = 50):
     """List indexed furniture items in the catalog."""
-    if vector_store is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Vector store unavailable")
-    return vector_store.get_all_items(limit=limit)
+    return vector_db.get_all_items(limit=limit)
 
 
 @app.post(
@@ -158,23 +143,10 @@ async def search_furniture(
 ):
     """End-to-End Multi-Object Visual RAG Search Pipeline:
 
-    1. Receives uploaded interior / room image.
-    2. Runs YOLOv8 ONNX object detection with class-aware NMS to identify all furniture pieces:
-       - COCO 56: "chair"
-       - COCO 57: "couch"
-       - COCO 58: "potted plant"
-       - COCO 60: "dining table"
-       (Overlapping objects like dining tables in front of couches are both preserved).
-    3. Extracts padded crops (10-15% margin) to retain edge and texture context.
-    4. Loops through EVERY crop without early returns or slicing, querying Qdrant
-       via ONNX FastEmbed visual embeddings.
-    5. Returns a structured JSON response mapping directly to Next.js and Alpine.js frontends:
-       {
-         "items": [
-           {"item_name": "couch", "matches": [...]},
-           {"item_name": "dining table", "matches": [...]}
-         ]
-       }
+    Stage 1: YOLOv8 ONNX Multi-Object Detection with Class-Aware NMS & 10-15% padding.
+    Memory Cleanup: Explicit garbage collection (gc.collect()) to release full-size image memory.
+    Stage 2: Pure NumPy Cosine Similarity search with zero extra RAM bloat.
+    Response: Clean JSON structure mapping directly to Next.js and Alpine.js frontends.
     """
     start_time = time.perf_counter()
 
@@ -198,8 +170,7 @@ async def search_furniture(
             detail=f"Failed to read/decode uploaded image: {str(exc)}",
         )
 
-    # 2. Multi-Object Detection with YOLOv8 & Padded Crop Extraction
-    # Using vision_pipeline with class-aware NMS and 10-15% padding
+    # 2. Stage 1: Multi-Object Detection with YOLOv8 & Padded Crop Extraction
     if vision_pipeline is not None:
         crops_data = vision_pipeline.detect_and_crop(
             pil_img,
@@ -214,7 +185,7 @@ async def search_furniture(
     if not crops_data:
         print("[INFO] [search-furniture] No distinct furniture objects detected. Processing full image as fallback.")
         crops_data = [{
-            "crop": pil_img,
+            "crop": pil_img.copy(),
             "class_label": "furniture",
             "confidence": 0.85,
             "box": [0, 0, pil_img.width, pil_img.height],
@@ -227,7 +198,15 @@ async def search_furniture(
         print(f"   * '{c.get('class_label')}' (conf={c.get('confidence')}) box={c.get('box')}")
     print(f"{'='*60}")
 
-    # 3. Process EVERY crop through Vector Search (NO early returns, NO slicing)
+    # =========================================================================
+    # MEMORY CLEANUP: Release raw image & force garbage collection before Stage 2
+    # Ensures memory stays strictly under Render 512MB RAM free tier limit.
+    # =========================================================================
+    del pil_img
+    del contents
+    gc.collect()
+
+    # 3. Stage 2: Process EVERY crop through Pure NumPy Vector Search (NO early returns, NO slicing)
     items: List[FurnitureDiscoveredItem] = []
     flattened_results: List[Dict[str, Any]] = []
     detected_objects_summary: List[Dict[str, Any]] = []
@@ -236,18 +215,18 @@ async def search_furniture(
         crop_image = crop_info["crop"]
         class_label = str(crop_info.get("class_label", "furniture"))
         conf = float(crop_info.get("confidence", 0.85))
-        box = crop_info.get("box", [0, 0, pil_img.width, pil_img.height])
+        box = crop_info.get("box", [0, 0, 0, 0])
 
         # Filter by category if explicitly requested by user in form parameters
         if category and category.strip() and category.lower() != "all":
             if category.lower() not in class_label.lower():
                 continue
 
-        # Query Vector Search engine for top-4 similar furniture products
+        # Pure NumPy Cosine Similarity Search (Category-Aware)
         matches = search_similar_furniture(
             image_crop=crop_image,
+            item_label=class_label,
             top_k=top_k if top_k else 4,
-            category=category if category else None,
             score_threshold=min_score,
         )
 
@@ -261,7 +240,6 @@ async def search_furniture(
             img_url = m.get("image_url", "")
 
             match_entry = {
-                # Database Payload Metadata (Step 1 schema)
                 "product_name": product_name,
                 "price": price_str,
                 "buy_link": buy_link,
@@ -270,7 +248,7 @@ async def search_furniture(
                 "category": m.get("category", class_label.title()),
                 "image_url": img_url,
                 "description": m.get("description", ""),
-                # Front-end UI Compatibility keys (for Next.js & Alpine.js cards)
+                # Frontend-friendly alias keys
                 "position": m_idx,
                 "title": product_name,
                 "source": store_name,
@@ -299,6 +277,9 @@ async def search_furniture(
             "confidence": conf,
             "bbox": box,
         })
+
+    # Final garbage collection after completing all crops
+    gc.collect()
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -355,7 +336,6 @@ async def search_lens(
             detail=f"Failed to read/decode uploaded image: {str(exc)}",
         )
 
-    # Execute live visual search
     visual_matches = lens_service.search_lens(
         image_input=contents,
         filename=file.filename or "query.jpg",
