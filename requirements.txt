@@ -1,10 +1,9 @@
-# VisionSpaceAI - Ultra-Lightweight Pure NumPy Visual Search
-# Tailored for Render Free-Tier (<= 512MB RAM limit)
-# STRICTLY NO PyTorch and NO Qdrant Database (Zero RAM bloat)
+# VisionSpaceAI - Ultra-Lightweight Visual Search Pipeline
+# Powered by YOLOv8 ONNX + SerpApi (Google Lens)
+# STRICTLY NO PyTorch, NO fastembed, NO Qdrant Database (Zero RAM bloat, < 200MB RAM)
 
 numpy<2.0.0
 onnxruntime>=1.18.0
-fastembed>=0.3.0
 fastapi>=0.110.0
 uvicorn>=0.28.0
 pydantic>=2.6.0

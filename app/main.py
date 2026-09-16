@@ -31,8 +31,7 @@ from app.models import (
     LensSearchResponse,
     LensVisualMatch,
 )
-from app.lens_service import lens_service
-from app.vector_search import search_similar_furniture, vector_db
+from app.lens_service import lens_service, search_furniture_with_lens
 from app.vision_pipeline import VisionPipeline
 
 logger = logging.getLogger("main")
@@ -43,14 +42,14 @@ vision_pipeline: Optional[VisionPipeline] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize models and in-memory catalog during application startup."""
+    """Initialize models during application startup."""
     global vision_pipeline
     print("=== Starting VisionSpaceAI Furniture Search Service ===")
 
     # 1. Initialize YOLOv8 ONNX Vision Pipeline (CPU Execution Provider, threads=1)
     vision_pipeline = VisionPipeline(device=settings.DEVICE)
 
-    print(f"=== VectorSearch Ready: {vector_db.get_count()} catalog items indexed (Pure NumPy, 0MB Qdrant overhead) ===")
+    print(f"=== SerpApi Google Lens Service Ready (0MB Vector DB overhead) ===")
     yield
     print("Shutting down service...")
 
@@ -60,7 +59,7 @@ app = FastAPI(
     version=settings.APP_VERSION,
     description=(
         "Visual furniture retrieval API using YOLOv8 ONNX multi-object detection, "
-        "class-aware NMS, and Pure NumPy Cosine Similarity vector search."
+        "class-aware NMS, and SerpAPI Google Lens live visual discovery."
     ),
     lifespan=lifespan,
 )
@@ -89,7 +88,7 @@ async def root():
     """Lightweight health check endpoint for Render health checks and general discovery."""
     return {
         "status": "online",
-        "engine": "VisionSpace AI Pure NumPy Engine",
+        "engine": "VisionSpace AI Neural Engine",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "docs_url": "/docs",
@@ -108,7 +107,7 @@ async def health_check():
             detail="Vision Pipeline not yet initialized",
         )
 
-    count = vector_db.get_count()
+    count = lens_service.get_catalog_count()
     return HealthResponse(
         status="healthy",
         app_name=settings.APP_NAME,
@@ -116,7 +115,7 @@ async def health_check():
         device=vision_pipeline.device,
         clip_loaded=True,
         mobilenet_loaded=vision_pipeline.mobilenet_model is not None,
-        qdrant_connected=True,  # In-memory pure NumPy vector DB ready
+        qdrant_connected=True,  # Lens service live visual search ready
         indexed_furniture_count=count,
     )
 
@@ -124,7 +123,7 @@ async def health_check():
 @app.get(f"{settings.API_PREFIX}/furniture", tags=["Catalog"])
 async def list_catalog(limit: int = 50):
     """List indexed furniture items in the catalog."""
-    return vector_db.get_all_items(limit=limit)
+    return lens_service.get_catalog_items(limit=limit)
 
 
 @app.post(
@@ -219,25 +218,27 @@ async def search_furniture(
 
         # Filter by category if explicitly requested by user in form parameters
         if category and category.strip() and category.lower() != "all":
-            if category.lower() not in class_label.lower():
+            clean_req_cat = category.strip().lower()
+            if class_label.lower() != "furniture" and clean_req_cat not in class_label.lower():
                 continue
+            if class_label.lower() == "furniture":
+                class_label = clean_req_cat
 
-        # Pure NumPy Cosine Similarity Search (Category-Aware)
-        matches = search_similar_furniture(
+        # Call SerpApi Google Lens for real-world visual product matches
+        matches = search_furniture_with_lens(
             image_crop=crop_image,
-            item_label=class_label,
             top_k=top_k if top_k else 4,
-            score_threshold=min_score,
+            category=class_label,
         )
 
         formatted_matches: List[Dict[str, Any]] = []
         for m_idx, m in enumerate(matches, start=1):
-            product_name = m.get("product_name", "Furniture Item")
+            product_name = m.get("product_name") or m.get("title") or "Furniture Item"
             price_str = str(m.get("price", "Check Website"))
-            buy_link = m.get("buy_link", "#")
-            store_name = m.get("store_name", "Retailer")
+            buy_link = m.get("buy_link") or m.get("link") or "#"
+            store_name = m.get("store_name") or m.get("source") or "Retailer"
             sim_score = float(m.get("similarity_score", 0.0))
-            img_url = m.get("image_url", "")
+            img_url = m.get("image_url") or m.get("thumbnail") or ""
 
             match_entry = {
                 "product_name": product_name,

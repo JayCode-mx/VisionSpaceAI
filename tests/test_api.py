@@ -2,6 +2,7 @@
 
 import io
 import unittest
+from unittest import mock
 from PIL import Image, ImageDraw
 from fastapi.testclient import TestClient
 
@@ -61,7 +62,7 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         self.assertIn("category", first_item)
         self.assertIn("price", first_item)
 
-    @unittest.mock.patch("app.main.lens_service.get_visual_matches")
+    @mock.patch("app.main.search_furniture_with_lens")
     def test_search_furniture_success(self, mock_lens):
         mock_lens.return_value = [
             {
@@ -112,7 +113,7 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         self.assertEqual(top_match["link"], "https://www.wayfair.com/furniture/pdp/chair-123.html")
         self.assertEqual(top_match["thumbnail"], "https://serpapi.com/th?q=chair")
 
-    @unittest.mock.patch("app.main.lens_service.get_visual_matches")
+    @mock.patch("app.main.search_furniture_with_lens")
     def test_search_furniture_with_category_filter(self, mock_lens):
         mock_lens.return_value = [
             {
@@ -144,7 +145,7 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    @unittest.mock.patch("app.main.lens_service.get_visual_matches")
+    @mock.patch("app.main.search_furniture_with_lens")
     def test_search_furniture_lens_results(self, mock_lens):
         mock_lens.return_value = [
             {
@@ -171,42 +172,41 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         self.assertEqual(len(data["results"]), 1)
         self.assertEqual(data["results"][0]["title"], "Minimalist Coffee Table")
 
-    @unittest.mock.patch("app.main.lens_service.search_multi_crops")
-    def test_search_furniture_consolidated_items_response(self, mock_multi):
-        mock_multi.return_value = [
+    @mock.patch("app.main.search_furniture_with_lens")
+    @mock.patch("app.main.vision_pipeline.detect_and_crop")
+    def test_search_furniture_consolidated_items_response(self, mock_extract, mock_lens):
+        from PIL import Image
+        mock_extract.return_value = [
             {
-                "item_id": 1,
-                "detected_name": "Teal Tufted Leather Sofa",
-                "category": "Sofa",
-                "bbox": [20, 30, 200, 150],
+                "crop": Image.new("RGB", (100, 100)),
+                "class_label": "couch",
                 "confidence": 0.89,
-                "matches": [
-                    {
-                        "title": "Article Sven Teal Tufted Sofa",
-                        "source": "West Elm",
-                        "price": "$1,499.00",
-                        "link": "https://www.westelm.com/sofa",
-                        "thumbnail": "https://img.thumb/sofa.jpg",
-                    }
-                ],
+                "box": [20, 30, 200, 150],
             },
             {
-                "item_id": 2,
-                "detected_name": "Modern Tiered Wooden Coffee Table",
-                "category": "Table",
-                "bbox": [60, 120, 180, 220],
+                "crop": Image.new("RGB", (100, 100)),
+                "class_label": "dining table",
                 "confidence": 0.75,
-                "matches": [
-                    {
-                        "title": "Tiered Coffee Table",
-                        "source": "Wayfair",
-                        "price": "$299.00",
-                        "link": "https://www.wayfair.com/table",
-                        "thumbnail": "https://img.thumb/table.jpg",
-                    }
-                ],
+                "box": [60, 120, 180, 220],
             },
         ]
+        def fake_lens(image_crop, top_k=4, category=None):
+            if category == "couch":
+                return [{
+                    "title": "Article Sven Teal Tufted Sofa",
+                    "source": "West Elm",
+                    "price": "$1,499.00",
+                    "link": "https://www.westelm.com/sofa",
+                    "thumbnail": "https://img.thumb/sofa.jpg",
+                }]
+            return [{
+                "title": "Tiered Coffee Table",
+                "source": "Wayfair",
+                "price": "$299.00",
+                "link": "https://www.wayfair.com/table",
+                "thumbnail": "https://img.thumb/table.jpg",
+            }]
+        mock_lens.side_effect = fake_lens
 
         img_bytes = self._create_sample_image(size=(400, 300))
         response = self.client.post(
@@ -226,16 +226,16 @@ class TestFurnitureSearchAPI(unittest.TestCase):
         # Check item 1
         item1 = data["items"][0]
         self.assertEqual(item1["item_id"], 1)
-        self.assertEqual(item1["detected_name"], "Teal Tufted Leather Sofa")
-        self.assertEqual(item1["category"], "Sofa")
+        self.assertEqual(item1["detected_name"], "Couch")
+        self.assertEqual(item1["item_name"], "couch")
         self.assertEqual(len(item1["matches"]), 1)
         self.assertEqual(item1["matches"][0]["source"], "West Elm")
 
         # Check item 2
         item2 = data["items"][1]
         self.assertEqual(item2["item_id"], 2)
-        self.assertEqual(item2["detected_name"], "Modern Tiered Wooden Coffee Table")
-        self.assertEqual(item2["category"], "Table")
+        self.assertEqual(item2["detected_name"], "Dining Table")
+        self.assertEqual(item2["item_name"], "dining table")
         self.assertEqual(len(item2["matches"]), 1)
         self.assertEqual(item2["matches"][0]["source"], "Wayfair")
 
