@@ -1,19 +1,20 @@
-"""Precision Furniture Object Detection Pipeline using YOLOv8 ONNX Runtime.
+"""Precision Furniture Object Detection & Context-Aware Cropping Pipeline using YOLOv8 ONNX.
 
-Optimized for high-precision furniture discovery under Render 512MB RAM constraints:
-- Pure CPU ONNX Runtime session for YOLOv8 (yolov8n.onnx).
-- Strict COCO Furniture Class Mapping:
+Optimized for high-precision furniture visual search via Google Lens (SerpApi)
+while strictly adhering to Render's 512MB RAM free tier limit:
+- Pure CPU ONNX Runtime session for YOLOv8 (yolov8n.onnx) with single-threaded ops (< 150MB RAM).
+- Specific COCO Furniture Class Mapping without generic substitutions:
     56: "chair",
     57: "couch",
     58: "potted plant",
+    59: "bed",
     60: "dining table"
-  (No generic/ambiguous names; strictly matches COCO labels).
-- Class-Aware Non-Maximum Suppression (NMS) with configurable IoU threshold so
-  overlapping objects (e.g., a dining table in front of a couch) are BOTH detected
-  and never suppressed.
-- Context-preserving `crop_objects` with 10-15% bounding box padding for downstream
-  vector embedding models.
-- Returns clean dictionaries containing crop, class label, and confidence score.
+- Class-Aware Non-Maximum Suppression (NMS) with non-aggressive IoU threshold (0.50) so
+  overlapping items (e.g., dining table in front of a sofa, or chairs around a table) are
+  distinctly preserved without aggressive suppression.
+- Context-preserving `crop_objects` with 15% pixel padding around detected bounding boxes
+  to feed rich visual context (legs, contours, material, room setting) into Google Lens.
+- Returns clean list of cropped PIL images, specific class labels, bounding boxes, and YOLO confidence scores.
 """
 
 import logging
@@ -32,18 +33,20 @@ except ImportError:
 
 logger = logging.getLogger("vision_pipeline")
 
-# Strict COCO Dataset Furniture Mapping (DO NOT rename to 'sofa' or generic terms)
+# Strict COCO Dataset Furniture Mapping (Specific labels; no generic 'furniture' replacements)
 COCO_FURNITURE_CLASSES: Dict[int, str] = {
     56: "chair",
     57: "couch",
     58: "potted plant",
+    59: "bed",
     60: "dining table",
 }
 
 # Backward-compatibility alias
 TARGET_CLASSES = COCO_FURNITURE_CLASSES
 CONF_THRESHOLD = 0.15
-IOU_THRESHOLD = 0.45
+IOU_THRESHOLD = 0.50
+PADDING_PERCENT = 0.15  # 15% context padding for Google Lens
 
 
 def compute_iou(box1: Union[List[float], np.ndarray], box2: Union[List[float], np.ndarray]) -> float:
@@ -75,20 +78,20 @@ def non_max_suppression(
 ) -> List[int]:
     """Perform Class-Aware Non-Maximum Suppression (NMS).
 
-    CRITICAL: NMS is executed independently per class ID.
-    This guarantees that overlapping objects of DIFFERENT classes (e.g. a
-    'dining table' positioned in front of a 'couch') are BOTH retained and
-    never suppress each other, while redundant duplicates of the SAME class
-    are cleanly filtered out.
+    CRITICAL FOR E-COMMERCE:
+    - Overlapping items of DIFFERENT classes (e.g., dining table in front of couch,
+      or chair tucked into table) never suppress each other.
+    - Multiple distinct items of the SAME class (e.g., 3 separate chairs) are ALL retained
+      as long as they do not heavily overlap each other (IoU <= iou_threshold).
 
     Args:
         boxes: NumPy array of shape (N, 4) in [x1, y1, x2, y2] format.
         scores: NumPy array of shape (N,) with confidence scores.
         class_ids: NumPy array of shape (N,) with class IDs.
-        iou_threshold: IoU overlap threshold for suppression (default 0.45).
+        iou_threshold: IoU overlap threshold for suppression (default 0.50).
 
     Returns:
-        List of integer indices to keep, ordered by score descending.
+        List of integer indices to keep, ordered by confidence score descending.
     """
     if len(boxes) == 0:
         return []
@@ -111,12 +114,11 @@ def non_max_suppression(
             if order.size == 1:
                 break
 
-            # Calculate IoU between top box and remaining boxes in this class
             current_box = cls_boxes[i]
             remaining_boxes = cls_boxes[order[1:]]
 
             ious = np.array([compute_iou(current_box, b) for b in remaining_boxes])
-            # Keep only boxes with IoU less than threshold
+            # Keep boxes that don't heavily overlap with the current top detection
             remaining_mask = np.where(ious < iou_threshold)[0]
             order = order[remaining_mask + 1]
 
@@ -127,41 +129,49 @@ def non_max_suppression(
 def crop_objects(
     image: Union[Image.Image, np.ndarray],
     boxes: List[Any],
-    padding_percent: float = 0.12,
+    padding_percent: float = PADDING_PERCENT,
 ) -> List[Dict[str, Any]]:
-    """Crop detected objects with 10-15% context padding.
+    """Crop detected objects with 15% context padding.
 
-    Adds contextual margin around each bounding box so visual embedding models
-    (such as CLIP/ONNX models) capture full edges, contours, and texture context
-    instead of aggressively cropped interiors.
+    Adds contextual pixel margin around each bounding box so Google Lens receives
+    the visual cues (chair legs, surroundings, fabric texture, perspective) required
+    to accurately differentiate product types (e.g. lawn chair vs. dining chair).
 
     Args:
-        image: Source PIL Image or NumPy array (RGB/BGR).
-        boxes: List of detection dicts (containing 'box' or 'bbox', 'label', 'confidence')
-               or raw box coordinates [x1, y1, x2, y2].
-        padding_percent: Relative margin expansion per dimension (0.10 to 0.15).
+        image: Source PIL Image or NumPy array.
+        boxes: List of detection dicts (with 'box' or 'bbox', 'label', 'confidence')
+               or raw coordinate tuples [x1, y1, x2, y2].
+        padding_percent: Relative margin expansion per dimension (default 0.15 / 15%).
 
     Returns:
         Clean list of dictionaries:
         [
             {
-                "crop": <PIL.Image.Image or np.ndarray>,
-                "class_label": "couch",
-                "confidence": 0.89,
+                "crop": <PIL.Image.Image in RGB mode>,
+                "class_label": "chair",
+                "confidence": 0.8924,
                 "box": [x1, y1, x2, y2],
                 "padded_box": [x1_pad, y1_pad, x2_pad, y2_pad],
             },
             ...
         ]
     """
+    # Normalize input image to RGB PIL Image
     if isinstance(image, np.ndarray):
         img_h, img_w = image.shape[:2]
-        is_numpy = True
+        if image.ndim == 3 and image.shape[2] == 3:
+            # OpenCV BGR to RGB
+            pil_source = Image.fromarray(image[..., ::-1])
+        else:
+            pil_source = Image.fromarray(image).convert("RGB")
+    elif isinstance(image, Image.Image):
+        pil_source = image.convert("RGB") if image.mode != "RGB" else image.copy()
+        img_w, img_h = pil_source.size
     else:
-        img_w, img_h = image.size
-        is_numpy = False
+        logger.error("Unsupported image type for cropping: %s", type(image))
+        return []
 
-    padding_percent = max(0.05, min(0.25, padding_percent))
+    padding_percent = max(0.0, min(0.35, padding_percent))
     crops: List[Dict[str, Any]] = []
 
     for item in boxes:
@@ -184,7 +194,7 @@ def crop_objects(
         box_w = max(1.0, x2 - x1)
         box_h = max(1.0, y2 - y1)
 
-        # 10-15% pixel expansion on each side
+        # 15% pixel expansion on each side
         pad_w = box_w * padding_percent
         pad_h = box_h * padding_percent
 
@@ -197,10 +207,8 @@ def crop_objects(
         if x2_pad <= x1_pad or y2_pad <= y1_pad:
             continue
 
-        if is_numpy:
-            crop = image[y1_pad:y2_pad, x1_pad:x2_pad].copy()
-        else:
-            crop = image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
+        # Extract context-padded crop as RGB PIL Image
+        crop = pil_source.crop((x1_pad, y1_pad, x2_pad, y2_pad))
 
         crops.append({
             "crop": crop,
@@ -213,20 +221,18 @@ def crop_objects(
     return crops
 
 
-# Compatibility helper matching original function signature
 def crop_with_padding(
     image: Union[Image.Image, np.ndarray],
     box: Union[List[int], Tuple[int, int, int, int]],
-    padding_percent: float = 0.12,
-) -> Union[Image.Image, np.ndarray]:
-    """Backward compatibility helper to crop a single bounding box with padding."""
+    padding_percent: float = PADDING_PERCENT,
+) -> Image.Image:
+    """Helper to crop a single bounding box with 15% padding."""
     res = crop_objects(image, [box], padding_percent=padding_percent)
     if res:
         return res[0]["crop"]
-    # Fallback to direct slice
-    if isinstance(image, np.ndarray):
-        return image[box[1]:box[3], box[0]:box[2]]
-    return image.crop((box[0], box[1], box[2], box[3]))
+    if isinstance(image, Image.Image):
+        return image.crop((box[0], box[1], box[2], box[3]))
+    return Image.fromarray(image[box[1]:box[3], box[0]:box[2]]).convert("RGB")
 
 
 def filter_detections(
@@ -235,7 +241,7 @@ def filter_detections(
     class_ids: Any,
     conf_threshold: float = CONF_THRESHOLD,
 ) -> List[Dict[str, Any]]:
-    """Filter raw detections by confidence and strict COCO furniture classes."""
+    """Filter raw detections by confidence and specific COCO furniture classes."""
     detected = []
     for box, score, class_id in zip(boxes, scores, class_ids):
         cid = int(class_id)
@@ -251,7 +257,7 @@ def filter_detections(
 
 
 class VisionPipeline:
-    """Lightweight YOLOv8 ONNX Object Detection & Feature Pipeline.
+    """Lightweight YOLOv8 ONNX Object Detection & Contextual Cropping Pipeline.
 
     Optimized for highest precision on furniture with strict COCO class mapping
     and memory under 512MB RAM.
@@ -266,7 +272,7 @@ class VisionPipeline:
         opts.intra_op_num_threads = 1
         opts.inter_op_num_threads = 1
 
-        # 1. Locate YOLOv8 ONNX model
+        # Locate YOLOv8 ONNX model
         yolo_path = self._find_model_path("yolov8n.onnx")
         if yolo_path:
             logger.info("Loading YOLOv8 ONNX model from %s...", yolo_path)
@@ -281,7 +287,7 @@ class VisionPipeline:
             logger.warning("yolov8n.onnx not found. Detection session unavailable.")
             self.yolo_session = None
 
-        # 2. Locate MobileNet/Feature model (optional for compatibility)
+        # Feature model compatibility session
         feat_path = self._find_model_path("model.onnx")
         if feat_path:
             self.feat_session = ort.InferenceSession(
@@ -361,24 +367,24 @@ class VisionPipeline:
         conf_threshold: float = CONF_THRESHOLD,
         iou_threshold: float = IOU_THRESHOLD,
     ) -> List[Dict[str, Any]]:
-        """Detect furniture items in an image using YOLOv8 ONNX.
+        """Detect all furniture items in an image using YOLOv8 ONNX.
 
-        Applies class-aware NMS to preserve overlapping objects of different
-        classes (e.g., dining table in front of couch).
+        Applies class-aware NMS to preserve overlapping objects of different classes
+        and collects ALL detected bounding boxes (e.g. 3 distinct chairs are all preserved).
 
         Args:
             image: PIL Image or NumPy array.
             conf_threshold: Minimum confidence score (default: 0.15).
-            iou_threshold: Non-maximum suppression IoU cutoff (default: 0.45).
+            iou_threshold: Non-maximum suppression IoU cutoff (default: 0.50).
 
         Returns:
             List of detected furniture dicts:
             [
                 {
                     "box": [x1, y1, x2, y2],
-                    "label": "couch",
+                    "label": "chair",
                     "confidence": 0.88,
-                    "class_id": 57
+                    "class_id": 56
                 },
                 ...
             ]
@@ -388,6 +394,8 @@ class VisionPipeline:
             return []
 
         pil_image = image if isinstance(image, Image.Image) else Image.fromarray(image)
+        if pil_image.mode != "RGB":
+            pil_image = pil_image.convert("RGB")
         orig_w, orig_h = pil_image.size
 
         # 1. Letterbox Preprocessing
@@ -407,7 +415,7 @@ class VisionPipeline:
         candidate_scores = []
         candidate_class_ids = []
 
-        # 4. Filter for strict COCO furniture classes (56: chair, 57: couch, 58: potted plant, 60: dining table)
+        # 4. Extract all bounding boxes matching specific COCO furniture classes
         for class_id, class_name in COCO_FURNITURE_CLASSES.items():
             if class_id >= class_scores.shape[1]:
                 continue
@@ -422,7 +430,7 @@ class VisionPipeline:
             valid_scores = scores_for_cls[mask]
 
             for (cx, cy, bw, bh), score in zip(valid_boxes, valid_scores):
-                # Convert 640x640 letterbox coords to original image dimensions
+                # Convert 640x640 letterbox coords back to original image dimensions
                 x1_canvas = cx - (bw / 2.0)
                 y1_canvas = cy - (bh / 2.0)
                 x2_canvas = cx + (bw / 2.0)
@@ -447,7 +455,8 @@ class VisionPipeline:
         if not candidate_boxes:
             return []
 
-        # 5. Class-Aware Non-Maximum Suppression (Overlapping different classes survive!)
+        # 5. Class-Aware Non-Maximum Suppression (Overlapping different classes survive;
+        #    multiple distinct items of same class are preserved)
         kept_indices = non_max_suppression(
             np.array(candidate_boxes, dtype=np.float32),
             np.array(candidate_scores, dtype=np.float32),
@@ -477,18 +486,19 @@ class VisionPipeline:
         image: Union[Image.Image, np.ndarray],
         conf_threshold: float = CONF_THRESHOLD,
         iou_threshold: float = IOU_THRESHOLD,
-        padding_percent: float = 0.12,
+        padding_percent: float = PADDING_PERCENT,
     ) -> List[Dict[str, Any]]:
-        """End-to-end detection and context-aware cropping.
+        """End-to-end detection and context-aware 15% padding cropping.
 
-        Detects furniture items and extracts cropped regions with 10-15% padding.
+        Detects all distinct furniture items and extracts cropped regions with 15% padding
+        ready for high-precision Google Lens visual searches.
 
         Returns:
             List of dicts:
             [
                 {
-                    "crop": <PIL.Image.Image or np.ndarray>,
-                    "class_label": "couch",
+                    "crop": <PIL.Image.Image in RGB mode>,
+                    "class_label": "chair",
                     "confidence": 0.88,
                     "box": [x1, y1, x2, y2],
                     "padded_box": [x1_pad, y1_pad, x2_pad, y2_pad],
@@ -498,6 +508,37 @@ class VisionPipeline:
         """
         detections = self.detect(image, conf_threshold=conf_threshold, iou_threshold=iou_threshold)
         return crop_objects(image, detections, padding_percent=padding_percent)
+
+    # Aliases for backward and multi-pipeline compatibility
+    def extract_all_furniture_crops(
+        self,
+        image: Union[Image.Image, np.ndarray],
+        conf_threshold: float = CONF_THRESHOLD,
+        iou_threshold: float = IOU_THRESHOLD,
+        padding_percent: float = PADDING_PERCENT,
+    ) -> List[Dict[str, Any]]:
+        """Alias for detect_and_crop."""
+        return self.detect_and_crop(
+            image=image,
+            conf_threshold=conf_threshold,
+            iou_threshold=iou_threshold,
+            padding_percent=padding_percent,
+        )
+
+    def extract_crops(
+        self,
+        image: Union[Image.Image, np.ndarray],
+        conf_threshold: float = CONF_THRESHOLD,
+        iou_threshold: float = IOU_THRESHOLD,
+        padding_percent: float = PADDING_PERCENT,
+    ) -> List[Dict[str, Any]]:
+        """Alias for detect_and_crop."""
+        return self.detect_and_crop(
+            image=image,
+            conf_threshold=conf_threshold,
+            iou_threshold=iou_threshold,
+            padding_percent=padding_percent,
+        )
 
     def predict(self, image_np: Union[np.ndarray, Image.Image]) -> np.ndarray:
         """Run raw inference on session (backwards compatibility)."""
