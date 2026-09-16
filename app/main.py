@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
     )
 
     # 3. Initialize YOLOv8 Object Detector with lower threshold for low-profile furniture
-    object_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.18, iou_threshold=0.45)
+    object_detector = ObjectDetector(model_name="yolov8n.pt", confidence_threshold=0.10, iou_threshold=0.50)
 
     # 4. Seed Catalog if collection is empty
     vector_store.seed_catalog_if_empty(vision_pipeline)
@@ -188,11 +188,23 @@ async def search_furniture(
         )
 
     # 2. Hybrid Region Extraction (YOLOv8 + Heuristic Region Sampling)
-    crops = extract_all_furniture_crops(pil_img, detector=object_detector, max_crops=4)
+    crops = extract_all_furniture_crops(pil_img, detector=object_detector, max_crops=6)
+
+    # 🔴 DEBUG: Log extracted crops
+    print(f"\n{'='*60}")
+    print(f"🌿 [search-furniture] extract_all_furniture_crops returned {len(crops)} crops:")
+    for c in crops:
+        print(f"   • #{c.get('item_id')} {c.get('label')} ({c.get('category')}) conf={c.get('confidence')} bbox={c.get('bbox')} heuristic={c.get('is_heuristic')}")
+    print(f"{'='*60}")
 
     # 3. Unified Visual Search across all crops
     top_matches = top_k if top_k else 3
     discovered_items_raw = lens_service.search_multi_crops(crops, top_matches_per_crop=top_matches)
+
+    # 🔴 DEBUG: Log search results per item
+    print(f"\n🔍 [search-furniture] search_multi_crops returned {len(discovered_items_raw)} items:")
+    for it in discovered_items_raw:
+        print(f"   • #{it.get('item_id')} '{it.get('detected_name')}' ({it.get('category')}) conf={it.get('confidence')} matches={len(it.get('matches', []))}")
 
     # Filter by category if requested
     if category and category.strip():
@@ -215,6 +227,12 @@ async def search_furniture(
     for idx, item in enumerate(filtered_results, start=1):
         item["item_id"] = idx
     discovered_items_raw = filtered_results
+
+    # 🔴 DEBUG: Final items going to frontend
+    print(f"\n✅ [search-furniture] FINAL ITEMS TO FRONTEND: {len(discovered_items_raw)}")
+    for it in discovered_items_raw:
+        print(f"   • #{it.get('item_id')} '{it.get('detected_name')}' ({it.get('category')}) matches={len(it.get('matches', []))}")
+    print()
 
     # 4. Consolidate into structured response
     items: List[FurnitureDiscoveredItem] = []

@@ -561,22 +561,59 @@ class LensService:
 
         return results
 
+    def get_product_matches(
+        self,
+        image_crop: Union[bytes, io.BytesIO, Image.Image, str],
+        min_confidence: float = 0.55,
+    ) -> List[Dict[str, Any]]:
+        """Fetch visual search product matches, filter by quality, and limit to exactly 4 results.
+
+        1. Fetches raw visual matches from search engine.
+        2. Filters out social media / non-store links (Instagram, Reddit, Pinterest, etc.).
+        3. Filters by minimum match confidence (55% cutoff).
+        4. Slices to EXACTLY 4 results maximum per crop/category.
+        """
+        try:
+            raw_results = self.get_visual_matches(image_crop)
+        except Exception as exc:
+            print(f"Warning: get_product_matches visual search failed: {exc}")
+            return []
+
+        # Filter out disallowed / non-store sources
+        cleaned_results = [
+            item for item in raw_results
+            if not any(
+                dis in (item.get("source") or "").lower() or dis in (item.get("link") or "").lower()
+                for dis in DISALLOWED_SOURCES
+            )
+        ]
+
+        # 55% confidence filter on match score (if present)
+        filtered_results = [
+            item for item in cleaned_results
+            if item.get("confidence") is None or item.get("confidence", 1.0) >= min_confidence
+        ]
+
+        # EXACTLY 4 RESULTS LIMIT:
+        return filtered_results[:4]
+
     def search_multi_crops(
         self,
         crops: List[Union[Image.Image, Dict[str, Any]]],
-        top_matches_per_crop: int = 3,
-        min_confidence: float = MIN_MATCH_CONFIDENCE,
+        top_matches_per_crop: int = 4,
+        min_confidence: float = 0.18,
     ) -> List[Dict[str, Any]]:
         """Unified visual search across multiple cropped image regions.
 
         Iterates over each crop, queries Google Lens for live web visual matches,
-        extracts the top 3 store listings, and derives a smart descriptive label.
-        Discards low-confidence items below min_confidence (default 55%) and social media links.
+        extracts up to 4 store listings per item, and derives a smart descriptive label.
+        Ensures all furniture items with detection confidence >= min_confidence (0.18)
+        are returned.
 
         Args:
             crops: List of PIL Images or crop metadata dictionaries from extract_all_furniture_crops.
-            top_matches_per_crop: Number of top store matches to keep per crop (default: 3).
-            min_confidence: Minimum detection confidence threshold (default: 0.55).
+            top_matches_per_crop: Number of top store matches to keep per crop (default: 4).
+            min_confidence: Minimum detection confidence threshold (default: 0.18).
 
         Returns:
             List of structured items ready for the API response:
@@ -587,11 +624,15 @@ class LensService:
                     "category": "Sofa",
                     "bbox": [x1, y1, x2, y2],
                     "confidence": 0.89,
-                    "matches": [ ...top store buy links... ],
+                    "matches": [ ...top 4 store buy links... ],
                 }, ...
             ]
         """
         items: List[Dict[str, Any]] = []
+
+        print(f"\n{'='*60}")
+        print(f"🔎 [search_multi_crops] Processing {len(crops)} crops (top_matches={top_matches_per_crop}, min_conf={min_confidence})")
+        print(f"{'='*60}")
 
         for idx, crop_item in enumerate(crops, start=1):
             if isinstance(crop_item, dict):
@@ -607,35 +648,31 @@ class LensService:
                 bbox = None
                 confidence = None
             else:
+                print(f"  ⚠️ Crop[{idx}]: Unknown type {type(crop_item)}, skipping")
                 continue
 
             if crop_img is None:
+                print(f"  ⚠️ Crop[{idx}] '{label}': No image, skipping")
                 continue
 
-            # Quality filter: Discard items with confidence below 55% threshold
+            # Check threshold for detection (default 0.18 so Sofa, Plant, Table, Chair are all retained)
             if confidence is not None and confidence < min_confidence:
+                print(f"  ❌ Crop[{idx}] '{label}': conf={confidence} < min={min_confidence}, SKIPPED")
                 continue
+
+            print(f"\n  🔍 Crop[{idx}] '{label}' ({category}) conf={confidence} bbox={bbox}")
 
             # Convert crop PIL Image to JPEG bytes
             buf = io.BytesIO()
             crop_img.convert("RGB").save(buf, format="JPEG", quality=95)
             crop_bytes = buf.getvalue()
 
-            # Live visual search
-            try:
-                raw_matches = self.get_visual_matches(crop_bytes)
-                # Filter out irrelevant social media platforms (Instagram, Reddit, Pinterest)
-                cleaned_matches = [
-                    m for m in raw_matches
-                    if not any(
-                        dis in (m.get("source") or "").lower() or dis in (m.get("link") or "").lower()
-                        for dis in DISALLOWED_SOURCES
-                    )
-                ]
-                matches = cleaned_matches[:top_matches_per_crop]
-            except Exception as exc:
-                print(f"Warning: Visual search failed for crop #{idx} ({exc})")
-                matches = []
+            # Live visual search: fetch product matches and limit to max 4 (or top_matches_per_crop)
+            matches = self.get_product_matches(crop_bytes, min_confidence=0.55)[:top_matches_per_crop]
+
+            print(f"     📊 Got {len(matches)} matches for '{label}'")
+            for m in matches[:2]:  # Print first 2 matches as sample
+                print(f"        → {m.get('title', 'N/A')[:50]} ({m.get('source', 'N/A')}) {m.get('price', 'N/A')}")
 
             smart_name = _derive_smart_name(matches, fallback_label=label, fallback_category=category)
 
@@ -663,6 +700,9 @@ class LensService:
                 "matches": matches,
             })
 
+            print(f"     ✅ Added as item #{len(items)}: '{smart_name}' ({item_cat})")
+
+        print(f"\n🏁 [search_multi_crops] TOTAL: {len(items)} items with matches")
         return items
 
 

@@ -423,7 +423,7 @@ def get_default_detector():
 def extract_all_furniture_crops(
     image: Image.Image,
     detector: Optional[Any] = None,
-    max_crops: int = 4,
+    max_crops: int = 6,
 ) -> List[dict]:
     """Hybrid Region Extractor combining YOLOv8 and Heuristic Region Sampling.
 
@@ -456,9 +456,14 @@ def extract_all_furniture_crops(
     if detector is not None:
         try:
             detected_raw = detector.detect(image)
+            print(f"\n🎯 [extract_all_furniture_crops] YOLO detector returned {len(detected_raw)} items")
+            for d in detected_raw:
+                print(f"   • {d.get('label')} (conf={d.get('confidence')}, bbox={d.get('bbox')})")
         except Exception as exc:
             print(f"Warning: YOLO detector failed ({exc}), falling back to heuristic crops.")
             detected_raw = []
+    else:
+        print(f"⚠️ [extract_all_furniture_crops] No detector provided, using heuristic only")
 
     # 2. Coverage Check: Check if table/surface object is detected in lower-center region
     # Lower-center target region: Y: 45%-85%, X: 25%-75%
@@ -541,5 +546,9 @@ def extract_all_furniture_crops(
     # Re-index item_ids sequentially
     for idx, c in enumerate(crops, start=1):
         c["item_id"] = idx
+
+    print(f"\n📦 [extract_all_furniture_crops] FINAL: Returning {len(crops)} crops (max_crops={max_crops})")
+    for c in crops:
+        print(f"   • #{c['item_id']} {c.get('label')} ({c.get('category')}) conf={c.get('confidence')} heuristic={c.get('is_heuristic')}")
 
     return crops

@@ -60,7 +60,7 @@ INTERIOR_COCO_IDS = {
 # COCO Class IDs: 56: chair, 57: couch/sofa, 58: potted plant, 60: dining table
 TARGET_CLASSES = {56: "Chair", 57: "Sofa", 58: "Plant", 60: "Table"}
 
-CONF_THRESHOLD = 0.18  # Threshold lower karein taaki table detect ho sake
+CONF_THRESHOLD = 0.10  # Threshold lower karein taaki sofa/plant bhi detect ho sake
 
 
 def filter_detections(boxes, scores, class_ids, conf_threshold: float = CONF_THRESHOLD) -> List[Dict[str, Any]]:
@@ -133,8 +133,8 @@ class ObjectDetector:
     def __init__(
         self,
         model_name: str = "yolov8n.pt",
-        confidence_threshold: float = 0.18,
-        iou_threshold: float = 0.45,
+        confidence_threshold: float = 0.10,
+        iou_threshold: float = 0.50,
     ):
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
@@ -168,10 +168,16 @@ class ObjectDetector:
         w, h = image.size
         detections = []
 
-        for box in boxes:
+        print(f"\n🔍 [_parse_boxes] Processing {len(boxes)} raw YOLO boxes (image: {w}x{h}, offset: {offset_x},{offset_y})")
+
+        for i, box in enumerate(boxes):
             cls_id = int(box.cls[0].item())
             score = float(box.conf[0].item())
             raw_label = names.get(cls_id, "").lower().strip()
+            xyxy_raw = box.xyxy[0].cpu().numpy().astype(int).tolist()
+
+            # 🔴 DEBUG: Print EVERY raw detection BEFORE any filtering
+            print(f"  📦 Box[{i}]: class_id={cls_id}, raw_label='{raw_label}', conf={score:.4f}, bbox={xyxy_raw}")
 
             # Match label against TARGET_CLASSES (56: Chair, 57: Sofa, 58: Plant, 60: Table) or known interior classes
             matched_label = None
@@ -187,14 +193,21 @@ class ObjectDetector:
                         break
 
             if matched_label is None:
+                print(f"    ❌ SKIPPED: class_id={cls_id} ('{raw_label}') not in TARGET_CLASSES or INTERIOR_COCO_IDS")
                 continue
 
+            # Check confidence threshold
+            if score < self.confidence_threshold:
+                print(f"    ❌ SKIPPED: conf={score:.4f} < threshold={self.confidence_threshold} for '{matched_label}'")
+                continue
+
+            print(f"    ✅ ACCEPTED: '{matched_label}' (conf={score:.4f})")
+
             # Bounding box coordinates
-            xyxy = box.xyxy[0].cpu().numpy().astype(int).tolist()
-            x1 = xyxy[0] + offset_x
-            y1 = xyxy[1] + offset_y
-            x2 = xyxy[2] + offset_x
-            y2 = xyxy[3] + offset_y
+            x1 = xyxy_raw[0] + offset_x
+            y1 = xyxy_raw[1] + offset_y
+            x2 = xyxy_raw[2] + offset_x
+            y2 = xyxy_raw[3] + offset_y
 
             # Clamp coordinates to full image bounds
             x1 = max(0, min(x1, w - 1))
@@ -212,6 +225,7 @@ class ObjectDetector:
                 "cropped_image": crop_img,
             })
 
+        print(f"  🎯 [_parse_boxes] Result: {len(detections)} items accepted out of {len(boxes)} raw boxes")
         return detections
 
     def detect(
@@ -238,7 +252,12 @@ class ObjectDetector:
             return []
 
         try:
-            # 1. Full Image Inference with conf=0.20 and iou=0.45
+            # 1. Full Image Inference
+            print(f"\n{'='*60}")
+            print(f"🚀 [ObjectDetector.detect] STARTING DETECTION")
+            print(f"   Image size: {w}x{h}, conf_thresh={conf_thresh}, iou_thresh={iou_thresh}")
+            print(f"{'='*60}")
+
             results = self.model(
                 image,
                 conf=conf_thresh,
@@ -248,6 +267,8 @@ class ObjectDetector:
 
             detections: List[Dict[str, Any]] = []
             if results and len(results) > 0 and results[0].boxes is not None:
+                total_raw = len(results[0].boxes)
+                print(f"\n📊 [STAGE 1 - Full Image] YOLO found {total_raw} raw boxes")
                 detections = self._parse_boxes(
                     results[0].boxes,
                     results[0].names,
@@ -255,6 +276,9 @@ class ObjectDetector:
                     offset_x=0,
                     offset_y=0,
                 )
+                print(f"📊 [STAGE 1 - Full Image] After filtering: {len(detections)} furniture items")
+            else:
+                print(f"\n⚠️ [STAGE 1 - Full Image] YOLO returned NO boxes at all!")
 
             # 2. Sliced / Center-Crop Detection Fallback
             # If YOLO detects <= 1 item in a multi-furniture room photo, run inference
@@ -317,6 +341,13 @@ class ObjectDetector:
             # Assign sequential object_ids
             for idx, det in enumerate(detections, start=1):
                 det["object_id"] = idx
+
+            # 🔴 FINAL DEBUG SUMMARY
+            print(f"\n{'='*60}")
+            print(f"✅ [ObjectDetector.detect] FINAL RESULT: {len(detections)} objects")
+            for det in detections:
+                print(f"   • {det['label']} (conf={det['confidence']:.4f}, bbox={det['bbox']})")
+            print(f"{'='*60}\n")
 
             return detections
 
