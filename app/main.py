@@ -1,11 +1,11 @@
 """FastAPI Application for Visual Furniture Search (VisionSpace AI).
 
 End-to-End Ultra-Lightweight Pipeline (Optimized for Render Free Tier <= 512MB RAM):
-1. Stage 1 (Detection): YOLOv8 ONNX with strict COCO classes (chair, couch, potted plant, dining table)
-   and class-aware NMS to preserve overlapping furniture.
+1. Stage 1 (Detection): YOLOv8 ONNX multi-object detection with 15% context padding.
 2. RAM Cleanup: Immediate image deletion and explicit Python garbage collection (gc.collect()).
-3. Stage 2 (Search): Pure NumPy Cosine Similarity Vector Search with 0MB extra RAM overhead.
-4. Clean JSON response with multi-object discovery mapping directly to Next.js and Alpine.js frontends.
+3. Stage 2 (Search): Real-time SerpApi Google Lens discovery with 0MB extra RAM overhead.
+4. Response: Clean JSON structure mapping directly to Next.js and Alpine.js frontends,
+   guaranteeing all detected objects are preserved without early return or slicing.
 """
 
 from contextlib import asynccontextmanager
@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     # 1. Initialize YOLOv8 ONNX Vision Pipeline (CPU Execution Provider, threads=1)
     vision_pipeline = VisionPipeline(device=settings.DEVICE)
 
-    print(f"=== SerpApi Google Lens Service Ready (0MB Vector DB overhead) ===")
+    print("=== SerpApi Google Lens Service Ready (0MB Vector DB overhead) ===")
     yield
     print("Shutting down service...")
 
@@ -64,7 +64,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Parse allowed origins for CORS middleware (from CORS_ORIGINS or ALLOWED_ORIGINS)
+# Parse allowed origins for CORS middleware
 raw_origins = getattr(settings, "CORS_ORIGINS", None) or getattr(settings, "ALLOWED_ORIGINS", "*")
 if isinstance(raw_origins, str):
     parsed_origins = [orig.strip() for orig in raw_origins.split(",") if orig.strip()]
@@ -115,7 +115,7 @@ async def health_check():
         device=vision_pipeline.device,
         clip_loaded=True,
         mobilenet_loaded=vision_pipeline.mobilenet_model is not None,
-        qdrant_connected=True,  # Lens service live visual search ready
+        qdrant_connected=True,
         indexed_furniture_count=count,
     )
 
@@ -137,15 +137,15 @@ async def search_furniture(
     file: UploadFile = File(..., description="Query furniture image file (JPEG, PNG, WEBP)"),
     top_k: int = Form(4, ge=1, le=50, description="Maximum number of nearest furniture items to return per object"),
     category: Optional[str] = Form(None, description="Optional category filter (e.g. Chair, Sofa, Table, Lighting)"),
-    min_score: Optional[float] = Form(None, ge=0.0, le=1.0, description="Minimum cosine similarity threshold"),
+    min_score: Optional[float] = Form(None, ge=0.0, le=1.0, description="Minimum similarity threshold"),
     include_mobilenet_features: bool = Form(False, description="Whether to also extract MobileNetV2 features"),
 ):
-    """End-to-End Multi-Object Visual RAG Search Pipeline:
+    """End-to-End Multi-Object Visual Search Pipeline:
 
-    Stage 1: YOLOv8 ONNX Multi-Object Detection with Class-Aware NMS & 10-15% padding.
+    Stage 1: YOLOv8 ONNX Multi-Object Detection with Class-Aware NMS & 15% context padding.
     Memory Cleanup: Explicit garbage collection (gc.collect()) to release full-size image memory.
-    Stage 2: Pure NumPy Cosine Similarity search with zero extra RAM bloat.
-    Response: Clean JSON structure mapping directly to Next.js and Alpine.js frontends.
+    Stage 2: Loop through EVERY cropped item without early returns or slicing, querying Google Lens via SerpApi.
+    Response: Complete list of all discovered items mapping cleanly to Next.js and Alpine.js frontends.
     """
     start_time = time.perf_counter()
 
@@ -169,18 +169,18 @@ async def search_furniture(
             detail=f"Failed to read/decode uploaded image: {str(exc)}",
         )
 
-    # 2. Stage 1: Multi-Object Detection with YOLOv8 & Padded Crop Extraction
+    # 2. Stage 1: Run image through vision_pipeline to extract all cropped items with 15% padding
     if vision_pipeline is not None:
         crops_data = vision_pipeline.detect_and_crop(
             pil_img,
             conf_threshold=0.15,
-            iou_threshold=0.45,
-            padding_percent=0.12,
+            iou_threshold=0.50,
+            padding_percent=0.15,
         )
     else:
         crops_data = []
 
-    # Fallback: If no objects were detected, treat the full image as a single query
+    # Fallback: If no distinct objects were detected, treat the full image as a single query
     if not crops_data:
         print("[INFO] [search-furniture] No distinct furniture objects detected. Processing full image as fallback.")
         crops_data = [{
@@ -205,8 +205,8 @@ async def search_furniture(
     del contents
     gc.collect()
 
-    # 3. Stage 2: Process EVERY crop through Pure NumPy Vector Search (NO early returns, NO slicing)
-    items: List[FurnitureDiscoveredItem] = []
+    # 3. Stage 2: Initialize empty final_response list and process EVERY crop item
+    final_response: List[Dict[str, Any]] = []
     flattened_results: List[Dict[str, Any]] = []
     detected_objects_summary: List[Dict[str, Any]] = []
 
@@ -259,17 +259,17 @@ async def search_furniture(
             formatted_matches.append(match_entry)
             flattened_results.append(match_entry)
 
-        # Build discovered item structure matching both Next.js and Alpine.js
-        item_obj = FurnitureDiscoveredItem(
-            item_id=idx,
-            item_name=class_label,                # Explicitly requested: "couch", "dining table", etc.
-            detected_name=class_label.title(),    # UI display title: "Couch", "Dining Table"
-            category=class_label.title(),         # Category label
-            bbox=box,
-            confidence=conf,
-            matches=formatted_matches,
-        )
-        items.append(item_obj)
+        # Append item dictionary with integer item_id (DO NOT use category names as unique keys)
+        item_entry = {
+            "item_id": idx,
+            "item_name": class_label,
+            "detected_name": class_label.title(),
+            "category": class_label.title(),
+            "bbox": box,
+            "confidence": conf,
+            "matches": formatted_matches,
+        }
+        final_response.append(item_entry)
 
         detected_objects_summary.append({
             "object_id": idx,
@@ -284,19 +284,19 @@ async def search_furniture(
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
-    print(f"\n[SUCCESS] [search-furniture] FINAL ITEMS TO FRONTEND: {len(items)}")
-    for it in items:
-        print(f"   * #{it.item_id} '{it.item_name}' ({it.category}) matches={len(it.matches)}")
+    print(f"\n[SUCCESS] [search-furniture] FINAL ITEMS TO FRONTEND: {len(final_response)}")
+    for it in final_response:
+        print(f"   * #{it['item_id']} '{it['item_name']}' ({it['category']}) matches={len(it['matches'])}")
     print(f"[TIMING] Search pipeline completed in {elapsed_ms:.2f}ms\n")
 
-    # 4. Return consolidated response
+    # 4. Return consolidated response containing full final_response list (NO slicing!)
     return FurnitureSearchResponse(
         status="success",
         engine="VisionSpace Spatial Match v2.0",
-        total_items=len(items),
-        total_objects_detected=len(items),
+        total_items=len(final_response),
+        total_objects_detected=len(final_response),
         execution_time_ms=round(elapsed_ms, 2),
-        items=items,
+        items=[FurnitureDiscoveredItem(**item) for item in final_response],
         detected_objects=detected_objects_summary,
         results=flattened_results,
     )
