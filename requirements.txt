@@ -1,5 +1,11 @@
+# VisionSpaceAI - Ultra-Lightweight Visual RAG Dependencies
+# Tailored for Render Free-Tier (<= 512MB RAM limit)
+# STRICTLY NO PyTorch (torch/torchvision) to prevent Out-Of-Memory (OOM) crashes
+
 numpy<2.0.0
 onnxruntime>=1.18.0
+fastembed>=0.3.0
+qdrant-client>=1.8.0
 fastapi>=0.110.0
 uvicorn>=0.28.0
 pydantic>=2.6.0
@@ -7,7 +13,5 @@ pillow>=10.2.0
 opencv-python-headless>=4.9.0.80
 python-multipart>=0.0.9
 httpx>=0.27.0
-qdrant-client>=1.8.0
 scikit-image>=0.22.0
 requests>=2.31.0
-fastembed>=0.3.0
