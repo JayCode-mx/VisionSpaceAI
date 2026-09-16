@@ -43,6 +43,7 @@ class ExtractedFeaturesSummary(BaseModel):
 
 class FurnitureDiscoveredItem(BaseModel):
     item_id: int = Field(..., description="1-based index of the detected item")
+    item_name: Optional[str] = Field(None, description="Clean detected class label (e.g. couch, dining table)")
     detected_name: str = Field(..., description="Smart name derived from top visual matches or detector")
     category: str = Field(..., description="Furniture category (e.g. Sofa, Table, Chair, Decor)")
     bbox: Optional[List[int]] = Field(None, description="Bounding box [x1, y1, x2, y2]")
