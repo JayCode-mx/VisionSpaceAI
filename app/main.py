@@ -213,16 +213,22 @@ async def search_furniture(
         if filtered:
             discovered_items_raw = filtered
 
-    # Fix 3: Quality filter - minimum 55% match confidence cutoff
-    # Backend API response send karne se pehle 55% se kam confidence wale items discard karein
-    MIN_MATCH_CONFIDENCE = 0.55  # 55% score cutoff
-    eff_min_conf = max(MIN_MATCH_CONFIDENCE, min_score) if min_score is not None else MIN_MATCH_CONFIDENCE
-
+    # Quality filter: Only keep items that have at least 1 valid store match.
+    # NOTE: Do NOT filter by detection confidence here! Heuristic region crops
+    # have conf=0.50 but produce excellent visual search results.
+    # The match-level quality filtering (55% cutoff) is already done inside
+    # lens_service.get_product_matches(), so items reaching here are already vetted.
     raw_results = discovered_items_raw
     filtered_results = [
         item for item in raw_results
-        if item.get("confidence") is None or item.get("confidence", 0) >= eff_min_conf
+        if len(item.get("matches", [])) > 0
     ]
+
+    # DEBUG: Log what got filtered
+    dropped = len(raw_results) - len(filtered_results)
+    if dropped > 0:
+        print(f"[search-furniture] Dropped {dropped} items with 0 matches")
+
     # Re-index items sequentially
     for idx, item in enumerate(filtered_results, start=1):
         item["item_id"] = idx
