@@ -188,7 +188,7 @@ async def search_furniture(
         )
 
     # 2. Hybrid Region Extraction (YOLOv8 + Heuristic Region Sampling)
-    crops = extract_all_furniture_crops(pil_img, detector=object_detector, max_crops=6)
+    crops = extract_all_furniture_crops(pil_img, detector=object_detector, max_crops=8)
 
     # 🔴 DEBUG: Log extracted crops
     print(f"\n{'='*60}")
@@ -199,7 +199,7 @@ async def search_furniture(
 
     # 3. Unified Visual Search across all crops
     top_matches = top_k if top_k else 3
-    discovered_items_raw = lens_service.search_multi_crops(crops, top_matches_per_crop=top_matches)
+    discovered_items_raw = lens_service.search_multi_crops(crops, top_matches_per_crop=top_matches, min_confidence=0.05)
 
     # 🔴 DEBUG: Log search results per item
     print(f"\n🔍 [search-furniture] search_multi_crops returned {len(discovered_items_raw)} items:")

@@ -268,7 +268,18 @@ class ObjectDetector:
             detections: List[Dict[str, Any]] = []
             if results and len(results) > 0 and results[0].boxes is not None:
                 total_raw = len(results[0].boxes)
-                print(f"\n📊 [STAGE 1 - Full Image] YOLO found {total_raw} raw boxes")
+                names = results[0].names
+                print(f"\n--- RAW YOLO ALL DETECTIONS ({total_raw} boxes) ---")
+                for i, box in enumerate(results[0].boxes):
+                    cid = int(box.cls[0].item())
+                    sc = float(box.conf[0].item())
+                    raw_name = names.get(cid, "unknown")
+                    xyxy = box.xyxy[0].cpu().numpy().astype(int).tolist()
+                    is_target = cid in TARGET_CLASSES or cid in INTERIOR_COCO_IDS
+                    marker = "<<< FURNITURE" if is_target else ""
+                    print(f"  [{i}] class_id={cid:3d} name='{raw_name:15s}' conf={sc:.4f} bbox={xyxy} {marker}")
+                print("--- END RAW YOLO ---\n")
+
                 detections = self._parse_boxes(
                     results[0].boxes,
                     results[0].names,
@@ -276,9 +287,9 @@ class ObjectDetector:
                     offset_x=0,
                     offset_y=0,
                 )
-                print(f"📊 [STAGE 1 - Full Image] After filtering: {len(detections)} furniture items")
+                print(f"[STAGE 1 - Full Image] After filtering: {len(detections)} furniture items")
             else:
-                print(f"\n⚠️ [STAGE 1 - Full Image] YOLO returned NO boxes at all!")
+                print(f"\n[STAGE 1 - Full Image] YOLO returned NO boxes at all!")
 
             # 2. Sliced / Center-Crop Detection Fallback
             # If YOLO detects <= 1 item in a multi-furniture room photo, run inference

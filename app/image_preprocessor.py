@@ -423,24 +423,26 @@ def get_default_detector():
 def extract_all_furniture_crops(
     image: Image.Image,
     detector: Optional[Any] = None,
-    max_crops: int = 6,
+    max_crops: int = 8,
 ) -> List[dict]:
-    """Hybrid Region Extractor combining YOLOv8 and Heuristic Region Sampling.
+    """Hybrid Region Extractor combining YOLOv8 and Aggressive Multi-Region Sampling.
 
     1. Primary Stage (YOLOv8):
        Run YOLO detection to identify explicit bounding boxes (sofas, chairs, tables, TV units).
     2. Coverage Check:
-       Check if a table/surface object was detected in the lower-center region
-       (Y: 45%-85%, X: 25%-75%).
-    3. Heuristic Fallback:
-       If no table box is detected in that region, automatically generate a candidate
-       bounding box for the lower-center quadrant (where living room coffee tables sit).
-    4. Crop all generated bounding boxes (YOLO boxes + Heuristic Coffee Table box).
+       Check if a table/surface object was detected in the lower-center region.
+    3. Smart Region Sampling:
+       When YOLO finds few items (<= 2), add heuristic crops for common furniture zones:
+       - Left half (sofas typically sit here)
+       - Right third (plants, side tables, decor)
+       - Lower center (coffee tables)
+       - Upper band (wall frames, clocks, TVs)
+    4. Full image fallback crop for visual search context.
 
     Args:
         image: Original PIL Image.
         detector: Optional ObjectDetector instance. If None, default detector is loaded.
-        max_crops: Maximum number of furniture crops to extract (default: 4).
+        max_crops: Maximum number of furniture crops to extract (default: 8).
 
     Returns:
         List of crop dictionaries with bounding boxes and cropped PIL images.
@@ -456,17 +458,16 @@ def extract_all_furniture_crops(
     if detector is not None:
         try:
             detected_raw = detector.detect(image)
-            print(f"\n🎯 [extract_all_furniture_crops] YOLO detector returned {len(detected_raw)} items")
+            print(f"\n[extract_all_furniture_crops] YOLO detector returned {len(detected_raw)} items")
             for d in detected_raw:
-                print(f"   • {d.get('label')} (conf={d.get('confidence')}, bbox={d.get('bbox')})")
+                print(f"   - {d.get('label')} (conf={d.get('confidence')}, bbox={d.get('bbox')})")
         except Exception as exc:
             print(f"Warning: YOLO detector failed ({exc}), falling back to heuristic crops.")
             detected_raw = []
     else:
-        print(f"⚠️ [extract_all_furniture_crops] No detector provided, using heuristic only")
+        print(f"[extract_all_furniture_crops] No detector provided, using heuristic only")
 
     # 2. Coverage Check: Check if table/surface object is detected in lower-center region
-    # Lower-center target region: Y: 45%-85%, X: 25%-75%
     lc_x1 = int(0.25 * w)
     lc_y1 = int(0.45 * h)
     lc_x2 = int(0.75 * w)
@@ -481,7 +482,6 @@ def extract_all_furniture_crops(
 
         is_table = any(t in label for t in ["table", "desk", "coffee table"]) or "table" in cat
         if is_table:
-            # Check overlap or center point in lower-center zone
             overlap = compute_bbox_iou(bbox, lc_box) if compute_bbox_iou else 0.0
             cx = (bbox[0] + bbox[2]) / 2.0
             cy = (bbox[1] + bbox[3]) / 2.0
@@ -489,7 +489,7 @@ def extract_all_furniture_crops(
                 table_in_lower_center = True
                 break
 
-    # Add valid YOLO detections
+    # Add valid YOLO detections as crops
     for det in detected_raw:
         bbox = det["bbox"]
         cropped = det.get("cropped_image")
@@ -506,10 +506,8 @@ def extract_all_furniture_crops(
             "is_heuristic": False,
         })
 
-    # 3. Heuristic Fallback: If no table box is detected in lower-center region,
-    # automatically generate a candidate bounding box for the lower-center quadrant
+    # 3. Heuristic Fallback: lower-center table crop
     if not table_in_lower_center and w >= 80 and h >= 80:
-        # Check if an existing YOLO box heavily overlaps the lower-center quadrant
         heavy_overlap = False
         for c in crops:
             if compute_bbox_iou and compute_bbox_iou(c["bbox"], lc_box) > 0.65:
@@ -527,6 +525,58 @@ def extract_all_furniture_crops(
                 "cropped_image": heuristic_crop,
                 "is_heuristic": True,
             })
+
+    # 4. SMART MULTI-REGION SAMPLING: When YOLO finds few items, add region crops
+    #    to catch sofas, plants, wall decor that YOLO missed
+    num_yolo_items = len(detected_raw)
+    print(f"[extract_all_furniture_crops] YOLO found {num_yolo_items} items, adding heuristic regions...")
+
+    if num_yolo_items <= 2 and w >= 100 and h >= 100:
+        # Define smart regions for typical living room layouts
+        heuristic_regions = [
+            # Left half — sofas/couches typically sit here
+            {
+                "bbox": [0, int(0.10 * h), int(0.55 * w), int(0.85 * h)],
+                "label": "sofa region",
+                "category": "Sofa",
+            },
+            # Right third — plants, side tables, lamps, decor
+            {
+                "bbox": [int(0.60 * w), int(0.10 * h), w, int(0.85 * h)],
+                "label": "decor region",
+                "category": "Decor",
+            },
+            # Upper band — wall frames, clocks, TVs, shelves
+            {
+                "bbox": [int(0.10 * w), 0, int(0.90 * w), int(0.40 * h)],
+                "label": "wall decor",
+                "category": "Decor",
+            },
+        ]
+
+        for region in heuristic_regions:
+            r_box = region["bbox"]
+
+            # Skip if this region heavily overlaps with an existing YOLO crop
+            is_redundant = False
+            for existing_crop in crops:
+                if compute_bbox_iou and compute_bbox_iou(existing_crop["bbox"], r_box) > 0.50:
+                    is_redundant = True
+                    print(f"   SKIP region '{region['label']}': overlaps with existing crop (IoU > 0.50)")
+                    break
+
+            if not is_redundant:
+                region_crop = crop_bounding_box(image, r_box)
+                crops.append({
+                    "item_id": len(crops) + 1,
+                    "label": region["label"],
+                    "category": region["category"],
+                    "confidence": 0.50,
+                    "bbox": r_box,
+                    "cropped_image": region_crop,
+                    "is_heuristic": True,
+                })
+                print(f"   ADDED heuristic region: '{region['label']}' bbox={r_box}")
 
     # Fallback if no crops detected at all: full image
     if len(crops) == 0:
@@ -547,8 +597,9 @@ def extract_all_furniture_crops(
     for idx, c in enumerate(crops, start=1):
         c["item_id"] = idx
 
-    print(f"\n📦 [extract_all_furniture_crops] FINAL: Returning {len(crops)} crops (max_crops={max_crops})")
+    print(f"\n[extract_all_furniture_crops] FINAL: Returning {len(crops)} crops (max_crops={max_crops})")
     for c in crops:
-        print(f"   • #{c['item_id']} {c.get('label')} ({c.get('category')}) conf={c.get('confidence')} heuristic={c.get('is_heuristic')}")
+        print(f"   - #{c['item_id']} {c.get('label')} ({c.get('category')}) conf={c.get('confidence')} heuristic={c.get('is_heuristic')}")
 
     return crops
+
